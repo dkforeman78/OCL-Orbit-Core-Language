@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from .ast import Function, IntegerLiteral, Program, ReturnStatement
+from .ast import I32_MAX, Function, IntegerLiteral, Program, ReturnStatement
 from .diagnostics import DiagnosticError
 from .lexer import Token, TokenKind
+
+_MAX_I32_DIGITS = len(str(I32_MAX))
 
 
 class Parser:
@@ -35,6 +37,10 @@ class Parser:
         start = self._expect(TokenKind.RETURN, "expected 'return' statement")
         value = self._expect(TokenKind.INTEGER, "expected integer literal after 'return'")
         self._expect(TokenKind.SEMICOLON, "expected ';' after return value")
+        # Reject over-long literals before int() runs: CPython refuses to convert
+        # strings past its digit limit, and that must not surface as a crash.
+        if len(value.lexeme.lstrip("0")) > _MAX_I32_DIGITS:
+            raise DiagnosticError("E0203", "integer literal does not fit in i32", self.source, value.location)
         return ReturnStatement(IntegerLiteral(int(value.lexeme), value.location), start.location)
 
     def _at(self, kind: TokenKind) -> bool:

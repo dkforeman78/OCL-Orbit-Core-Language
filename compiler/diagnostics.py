@@ -10,6 +10,10 @@ class SourceLocation:
     column: int
 
 
+class InternalCompilerError(Exception):
+    """A compiler invariant was violated, not a defect in the user's source."""
+
+
 class DiagnosticError(Exception):
     def __init__(self, code: str, message: str, source: str, location: SourceLocation):
         self.code = code

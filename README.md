@@ -5,7 +5,7 @@ OCL Compiler Prototype 0.1 proves the bootstrap path from `.ocl` source through 
 ## Prerequisites
 
 - Python 3.11 or newer (the compiler has no third-party Python dependencies).
-- LLVM/Clang 18 or newer for `build` and the native acceptance test. Put `clang` on `PATH`, install it at `C:\Program Files\LLVM\bin\clang.exe`, or set `OCL_CLANG` to its full path.
+- LLVM/Clang 18 or newer for `build` and the native acceptance test. Put `clang` on `PATH`, install it at `C:\Program Files\LLVM\bin\clang.exe`, or set `OCL_CLANG` to its full path. If `OCL_CLANG` is set but does not name a file, `build` fails rather than falling back to another compiler.
 - A platform linker supported by Clang. The LLVM Windows installer includes
   `lld-link`, which is sufficient for Prototype 0.1.
 
@@ -22,7 +22,12 @@ The prototype is tested on Windows x86-64 and is designed to work on Linux/macOS
 $LASTEXITCODE # 42
 ```
 
-On non-Windows hosts, run `python3 oclc.py ...`. `build` leaves the generated `.ll` file beside the source for inspection.
+On non-Windows hosts, run `python3 oclc.py ...`. `build` leaves the generated `.ll` file beside the source for inspection, overwriting any existing file of that name.
+
+Source files are read as UTF-8 and a leading byte-order mark is accepted.
+
+Exit codes: `0` success, `1` a diagnostic or a bad invocation, `2` Clang not
+found, `70` an internal compiler error (a bug — please report it).
 
 ## Tests
 
@@ -30,7 +35,7 @@ On non-Windows hosts, run `python3 oclc.py ...`. `build` leaves the generated `.
 python -m unittest discover -s tests -v
 ```
 
-The native build/execute test skips when Clang is unavailable; all frontend and IR tests still run. A supported clean development environment includes Clang, where all tests must pass.
+The native build/execute test skips when Clang is unavailable; all frontend and IR tests still run. A supported clean development environment includes Clang, where all tests must pass. Set `OCL_REQUIRE_CLANG=1` to turn that skip into a failure — CI does this so the acceptance criterion cannot silently disappear from a green run.
 
 ## Scope and limitations
 

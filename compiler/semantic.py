@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .ast import Program
+from .ast import I32_MAX, Program
 from .diagnostics import DiagnosticError, SourceLocation
 
 
@@ -15,7 +15,7 @@ def analyze(program: Program, source: str) -> None:
         if len(function.body) != 1:
             raise DiagnosticError("E0202", "function body must contain exactly one return statement", source, function.location)
         value = function.body[0].expression
-        if value.value > 2_147_483_647:
+        if value.value > I32_MAX:
             raise DiagnosticError("E0203", "integer literal does not fit in i32", source, value.location)
     if "main" not in names:
         location = program.functions[0].location if program.functions else SourceLocation(0, 1, 1)

@@ -7,23 +7,29 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .diagnostics import DiagnosticError
+from .diagnostics import DiagnosticError, InternalCompilerError
 from .driver import compile_source
 
 
 def _clang() -> str | None:
     configured = os.environ.get("OCL_CLANG")
-    candidates = [configured] if configured else []
-    candidates.extend(filter(None, (shutil.which("clang"), shutil.which("clang.exe"))))
+    if configured:
+        # An explicit pin must not silently fall back to a different toolchain.
+        if not Path(configured).is_file():
+            raise ValueError(f"OCL_CLANG is set to {configured!r}, which is not a file")
+        return configured
+    candidates = list(filter(None, (shutil.which("clang"), shutil.which("clang.exe"))))
     if os.name == "nt":
         candidates.append(r"C:\Program Files\LLVM\bin\clang.exe")
-    return next((item for item in candidates if item and Path(item).is_file()), None)
+    return next((item for item in candidates if Path(item).is_file()), None)
 
 
 def _read_and_compile(path: Path) -> str:
     if path.suffix.lower() != ".ocl":
         raise ValueError("input file must use the .ocl extension")
-    source = path.read_text(encoding="utf-8")
+    # utf-8-sig so a byte-order mark, which several Windows editors write by
+    # default, does not reach the lexer as an invalid token.
+    source = path.read_text(encoding="utf-8-sig")
     return compile_source(source, path.name)[1]
 
 
@@ -67,6 +73,10 @@ def main(argv: list[str] | None = None) -> int:
     except DiagnosticError as error:
         print(error.render(str(args.source)), file=sys.stderr)
         return 1
+    except InternalCompilerError as error:
+        print(f"internal compiler error: {error}", file=sys.stderr)
+        print("this is a compiler bug; please report it with the source that triggered it", file=sys.stderr)
+        return 70
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

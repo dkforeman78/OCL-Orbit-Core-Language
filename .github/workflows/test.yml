@@ -6,6 +6,7 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
@@ -13,4 +14,38 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m unittest discover -s tests -v
+
+      - name: Install Clang (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+
+      - name: Put the bundled LLVM on PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      # The native test skips itself when Clang is missing. CI must prove Clang
+      # is present, or the one criterion Prototype 0.1 exists to demonstrate can
+      # disappear from a green run.
+      - name: Verify the toolchain
+        run: clang --version
+
+      - name: Run tests
+        env:
+          OCL_REQUIRE_CLANG: "1"
+        run: python -m unittest discover -s tests -v
+
+      # Contract section 18, run as documented: build, execute, expect 42.
+      - name: Acceptance test
+        shell: bash
+        run: |
+          python oclc.py build examples/hello.ocl
+          if [ "$RUNNER_OS" = "Windows" ]; then exe=examples/hello.exe; else exe=examples/hello; fi
+          set +e
+          "./$exe"
+          code=$?
+          set -e
+          echo "exit code: $code"
+          test "$code" -eq 42
