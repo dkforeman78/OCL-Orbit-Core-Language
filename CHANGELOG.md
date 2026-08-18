@@ -17,3 +17,6 @@
 - Prevented Clang option injection through dash-prefixed source names and stopped `build` from overwriting source-adjacent LLVM IR.
 - Normalized external Clang failures, renamed the AST node module to avoid shadowing Python's standard library, and added correct UTF-8 LLVM string escaping.
 - Documented provisional symbol linkage and the verified scope of the Windows CRT-free entry mechanism.
+- Unified the Clang-dependent test guard so `OCL_REQUIRE_CLANG` governs every such test, not only the native acceptance test.
+- Added `tools/check_clang_version.py`, run in CI, which resolves Clang the same way `oclc build` does and enforces separate LLVM and Apple Clang version floors.
+- Documented that exit code `1` also covers a failed native build or link, and that Clang's own exit status is never forwarded.

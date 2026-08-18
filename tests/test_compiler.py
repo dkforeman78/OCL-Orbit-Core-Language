@@ -1,3 +1,5 @@
+import contextlib
+import io
 import os
 import subprocess
 import sys
@@ -13,9 +15,28 @@ from compiler.driver import compile_source
 from compiler.nodes import Function, IntegerLiteral, Program, ReturnStatement
 from compiler.semantic import analyze
 
+sys.path.insert(0, str(Path(__file__).parents[1] / "tools"))
+import check_clang_version  # noqa: E402
+
 
 VALID = "fn main() -> i32 {\n    return 42;\n}\n"
 ROOT = Path(__file__).parents[1]
+
+
+def require_clang() -> None:
+    """Guard every Clang-dependent test identically.
+
+    Skipping is a local convenience. CI sets OCL_REQUIRE_CLANG so that a missing
+    toolchain fails instead, and no Clang-dependent coverage can quietly drop out
+    of a green run.
+    """
+    from compiler.cli import _clang
+
+    if _clang():
+        return
+    if os.environ.get("OCL_REQUIRE_CLANG"):
+        raise AssertionError("OCL_REQUIRE_CLANG is set but Clang was not found")
+    raise unittest.SkipTest("LLVM/Clang is not installed on this host")
 
 
 class DiagnosticAssertions(unittest.TestCase):
@@ -238,9 +259,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("OCL_CLANG", result.stderr)
 
     def test_build_does_not_clobber_source_adjacent_ir(self):
-        from compiler.cli import _clang
-        if not _clang():
-            self.skipTest("LLVM/Clang is not installed on this host")
+        require_clang()
         with tempfile.TemporaryDirectory() as directory:
             source = Path(self._write(directory, "hello.ocl", VALID))
             neighboring_ir = source.with_suffix(".ll")
@@ -251,9 +270,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(neighboring_ir.read_text(encoding="utf-8"), "user-owned")
 
     def test_dash_prefixed_source_cannot_become_a_clang_argument(self):
-        from compiler.cli import _clang
-        if not _clang():
-            self.skipTest("LLVM/Clang is not installed on this host")
+        require_clang()
         with tempfile.TemporaryDirectory() as directory:
             self._write(directory, "-warning.ocl", VALID)
             output = Path(directory) / ("out.exe" if os.name == "nt" else "out")
@@ -272,16 +289,58 @@ class CliTests(unittest.TestCase):
         stderr.write.assert_called()
 
 
+class ToolchainCheckTests(unittest.TestCase):
+    """The CI toolchain gate is pure enough to test without three compilers installed."""
+
+    UPSTREAM = "clang version 18.1.8 (https://github.com/llvm/llvm-project 3b5b5c1)\nTarget: x86_64-pc-windows-msvc\n"
+    UBUNTU = "Ubuntu clang version 18.1.3 (1ubuntu1)\nTarget: x86_64-pc-linux-gnu\n"
+    APPLE = "Apple clang version 16.0.0 (clang-1600.0.26.6)\nTarget: arm64-apple-darwin23.6.0\n"
+
+    def test_upstream_and_distribution_builds_are_llvm_numbered(self):
+        self.assertEqual(check_clang_version.parse_clang_version(self.UPSTREAM), ("llvm", 18, 1))
+        self.assertEqual(check_clang_version.parse_clang_version(self.UBUNTU), ("llvm", 18, 1))
+
+    def test_apple_clang_is_recognised_as_its_own_vendor(self):
+        # Apple's numbering is not upstream's; conflating them would apply the
+        # wrong floor to macOS.
+        self.assertEqual(check_clang_version.parse_clang_version(self.APPLE), ("apple", 16, 0))
+
+    def test_each_vendor_gets_its_documented_floor(self):
+        self.assertEqual(check_clang_version.minimum_for("llvm"), 18)
+        self.assertEqual(check_clang_version.minimum_for("apple"), 15)
+
+    def test_supported_versions_pass(self):
+        for text in (self.UPSTREAM, self.UBUNTU, self.APPLE):
+            self.assertIn("satisfies", check_clang_version.check_version_text(text))
+
+    def test_an_old_upstream_clang_is_rejected(self):
+        with self.assertRaises(check_clang_version.ToolchainError) as caught:
+            check_clang_version.check_version_text("clang version 17.0.6\n")
+        self.assertIn("older than", str(caught.exception))
+
+    def test_an_old_apple_clang_is_rejected(self):
+        with self.assertRaises(check_clang_version.ToolchainError):
+            check_clang_version.check_version_text("Apple clang version 14.0.3 (clang-1403.0.22.14.1)\n")
+
+    def test_an_apple_clang_below_the_llvm_floor_still_passes(self):
+        # Guards the whole point of the split: Apple Clang 16 must not be judged
+        # against the LLVM 18 floor.
+        self.assertIn("Apple Clang 16", check_clang_version.check_version_text(self.APPLE))
+
+    def test_unparseable_output_is_an_error_not_a_crash(self):
+        with self.assertRaises(check_clang_version.ToolchainError):
+            check_clang_version.check_version_text("gcc (GCC) 13.2.0\n")
+
+    def test_the_check_runs_against_this_host(self):
+        require_clang()
+        with contextlib.redirect_stdout(io.StringIO()) as captured:
+            self.assertEqual(check_clang_version.main(), 0)
+        self.assertIn("satisfies", captured.getvalue())
+
+
 class NativeTests(unittest.TestCase):
     def test_native_build_and_exit_value(self):
-        from compiler.cli import _clang
-
-        if not _clang():
-            # CI sets OCL_REQUIRE_CLANG so the acceptance criterion cannot skip
-            # its way into a green run.
-            if os.environ.get("OCL_REQUIRE_CLANG"):
-                self.fail("OCL_REQUIRE_CLANG is set but Clang was not found")
-            self.skipTest("LLVM/Clang is not installed on this host")
+        require_clang()
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / ("hello.exe" if os.name == "nt" else "hello")
             result = subprocess.run(

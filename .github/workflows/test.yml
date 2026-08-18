@@ -27,11 +27,12 @@ jobs:
         shell: pwsh
         run: echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
-      # The native test skips itself when Clang is missing. CI must prove Clang
-      # is present, or the one criterion Prototype 0.1 exists to demonstrate can
-      # disappear from a green run.
+      # Clang-dependent tests skip themselves when Clang is missing. CI must
+      # prove the toolchain is present and new enough, or the one criterion
+      # Prototype 0.1 exists to demonstrate can disappear from a green run.
+      # This checks the same binary oclc resolves, not merely whatever is on PATH.
       - name: Verify the toolchain
-        run: clang --version
+        run: python tools/check_clang_version.py
 
       - name: Run tests
         env:

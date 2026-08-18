@@ -5,7 +5,13 @@ OCL Compiler Prototype 0.1 proves the bootstrap path from `.ocl` source through 
 ## Prerequisites
 
 - Python 3.11 or newer (the compiler has no third-party Python dependencies).
-- LLVM/Clang 18 or newer for `build` and the native acceptance test. Put `clang` on `PATH`, install it at `C:\Program Files\LLVM\bin\clang.exe`, or set `OCL_CLANG` to its full path. If `OCL_CLANG` is set but does not name a file, `build` fails rather than falling back to another compiler.
+- LLVM/Clang 18 or newer for `build` and the native acceptance test, or Apple
+  Clang 15 or newer on macOS — Apple Clang uses Apple's own version numbering, so
+  it is held to a separate floor. Put `clang` on `PATH`, install it at
+  `C:\Program Files\LLVM\bin\clang.exe`, or set `OCL_CLANG` to its full path. If
+  `OCL_CLANG` is set but does not name a file, `build` fails rather than falling
+  back to another compiler. Run `python tools/check_clang_version.py` to confirm
+  the toolchain oclc will use.
 - A platform linker supported by Clang. The LLVM Windows installer includes
   `lld-link`, which is sufficient for Prototype 0.1.
 
@@ -30,8 +36,10 @@ inspect or retain the generated IR.
 
 Source files are read as UTF-8 and a leading byte-order mark is accepted.
 
-Exit codes: `0` success, `1` a diagnostic or a bad invocation, `2` Clang not
-found, `70` an internal compiler error (a bug — please report it).
+Exit codes: `0` success; `1` a diagnostic, a bad invocation, or a failed native
+build or link; `2` Clang not found; `70` an internal compiler error (a bug —
+please report it). Clang's own exit status is deliberately not forwarded, so it
+cannot collide with a reserved compiler code.
 
 ## Tests
 
@@ -39,7 +47,16 @@ found, `70` an internal compiler error (a bug — please report it).
 python -m unittest discover -s tests -v
 ```
 
-The native build/execute test skips when Clang is unavailable; all frontend and IR tests still run. A supported clean development environment includes Clang, where all tests must pass. Set `OCL_REQUIRE_CLANG=1` to turn that skip into a failure — CI does this so the acceptance criterion cannot silently disappear from a green run.
+The Clang-dependent tests — the native build/execute acceptance test, the two
+build-behaviour tests, and the toolchain check — skip when Clang is unavailable;
+all frontend and IR tests still run. A supported clean development environment
+includes Clang, where all tests must pass. Set `OCL_REQUIRE_CLANG=1` to turn
+every one of those skips into a failure — CI does this, so no Clang-dependent
+coverage can silently disappear from a green run.
+
+CI additionally runs `python tools/check_clang_version.py`, which resolves Clang
+the same way `oclc build` does and rejects a toolchain below the documented
+minimum.
 
 ## Scope and limitations
 
