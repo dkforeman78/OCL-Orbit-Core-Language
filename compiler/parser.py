@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .ast import I32_MAX, Function, IntegerLiteral, Program, ReturnStatement
+from .nodes import I32_MAX, Function, IntegerLiteral, Program, ReturnStatement
 from .diagnostics import DiagnosticError
 from .lexer import Token, TokenKind
 

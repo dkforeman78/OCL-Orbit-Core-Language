@@ -9,7 +9,9 @@ OCL Compiler Prototype 0.1 proves the bootstrap path from `.ocl` source through 
 - A platform linker supported by Clang. The LLVM Windows installer includes
   `lld-link`, which is sufficient for Prototype 0.1.
 
-The prototype is tested on Windows x86-64 and is designed to work on Linux/macOS hosts supported by Clang. Cross-compilation and ARM64 validation are roadmap work, not 0.1 claims.
+The prototype is tested in CI on Windows, Linux, and macOS with Python 3.11 and
+3.12. Windows x86-64 is the primary development host. Cross-compilation and
+ARM64 validation are roadmap work, not 0.1 claims.
 
 ## Use
 
@@ -22,7 +24,9 @@ The prototype is tested on Windows x86-64 and is designed to work on Linux/macOS
 $LASTEXITCODE # 42
 ```
 
-On non-Windows hosts, run `python3 oclc.py ...`. `build` leaves the generated `.ll` file beside the source for inspection, overwriting any existing file of that name.
+On non-Windows hosts, run `python3 oclc.py ...`. `build` uses temporary LLVM IR
+and does not alter a source-adjacent `.ll` file. Use `emit-ir` when you want to
+inspect or retain the generated IR.
 
 Source files are read as UTF-8 and a leading byte-order mark is accepted.
 
@@ -47,3 +51,6 @@ Windows 0.1 executables are linked without the MSVC C runtime and enter directly
 at `main`. This is safe for the current literal-return-only subset and avoids an
 unnecessary Visual Studio dependency. A proper runtime entry point and C ABI
 linking strategy must be designed before library calls or arguments are added.
+The Windows-only linker flags assume Clang's PE/COFF-compatible linker interface;
+they do not select or stabilize a target triple. Clang selects the native host
+target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.1 claim.

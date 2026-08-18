@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from .diagnostics import DiagnosticError, InternalCompilerError
@@ -56,18 +57,25 @@ def main(argv: list[str] | None = None) -> int:
             print("error: Clang was not found; install LLVM/Clang or set OCL_CLANG to clang's full path", file=sys.stderr)
             return 2
         output = args.output or args.source.with_suffix(".exe" if os.name == "nt" else "")
-        ir_path = args.source.with_suffix(".ll")
-        ir_path.write_text(ir, encoding="utf-8")
-        command = [clang, str(ir_path)]
-        # Prototype 0.1 has no runtime or C-library calls. On Windows, linking
-        # directly to main keeps the bootstrap independent of the MSVC CRT.
-        if os.name == "nt":
-            command.extend(("-nostdlib", "-Wl,/entry:main", "-Wl,/subsystem:console"))
-        command.extend(("-o", str(output)))
-        result = subprocess.run(command, text=True, capture_output=True)
+        # Build IR is an intermediate, not a user artifact. Keeping it in a
+        # temporary directory prevents source-adjacent .ll clobbering and also
+        # ensures a source named like "-warning.ocl" cannot become a Clang flag.
+        with tempfile.TemporaryDirectory(prefix="oclc-") as directory:
+            ir_path = Path(directory).resolve() / "module.ll"
+            ir_path.write_text(ir, encoding="utf-8")
+            command = [clang, str(ir_path)]
+            # Prototype 0.1 has no runtime or C-library calls. On Windows,
+            # linking directly to main keeps the bootstrap independent of the
+            # MSVC CRT. These are PE/COFF linker flags, selected only by host OS.
+            if os.name == "nt":
+                command.extend(("-nostdlib", "-Wl,/entry:main", "-Wl,/subsystem:console"))
+            command.extend(("-o", str(output)))
+            result = subprocess.run(command, text=True, capture_output=True)
         if result.returncode:
             print(result.stderr, file=sys.stderr, end="")
-            return result.returncode
+            # External tool exit values are not part of oclc's public exit-code
+            # contract and must not collide with reserved compiler codes.
+            return 1
         print(f"built {output}")
         return 0
     except DiagnosticError as error:

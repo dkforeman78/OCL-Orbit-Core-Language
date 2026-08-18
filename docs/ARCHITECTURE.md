@@ -12,6 +12,9 @@ Direct AST-to-LLVM lowering is limited to the bootstrap. An Orbit IR layer can b
 
 LLVM and the host linker own object format, calling convention, target selection, optimization, and machine-code generation. This avoids prematurely defining the OCL ABI or the Orbit `.oxr` format.
 
-On Windows, the 0.1 bootstrap links without the MSVC CRT and selects `main`
-directly as the PE entry point. That narrowly supports the current no-argument,
-literal-return acceptance program. It is not the permanent OCL runtime or ABI.
+On Windows, the 0.1 bootstrap passes PE/COFF linker options through Clang, links
+without the MSVC CRT, and selects `main` directly as the executable entry point.
+Clang still chooses the native host target; OCL does not embed a Windows target
+triple. This narrowly supports the current no-argument, literal-return acceptance
+program on the verified x86-64 host. It is not the permanent OCL runtime or ABI,
+and it is not a claim of Windows ARM64 support.

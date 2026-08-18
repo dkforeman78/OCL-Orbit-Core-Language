@@ -1,4 +1,4 @@
-from .ast import Program
+from .nodes import Program
 from .codegen import generate_llvm_ir
 from .lexer import lex
 from .parser import parse

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .ast import I32_MAX, Program
+from .nodes import I32_MAX, Program
 from .diagnostics import DiagnosticError, SourceLocation
 
 

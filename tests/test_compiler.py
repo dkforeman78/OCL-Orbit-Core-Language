@@ -4,11 +4,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from compiler.ast import Function, IntegerLiteral, Program, ReturnStatement
-from compiler.codegen import generate_llvm_ir
+from compiler import cli
+from compiler.codegen import _escape_llvm_string, generate_llvm_ir
 from compiler.diagnostics import DiagnosticError, InternalCompilerError, SourceLocation
 from compiler.driver import compile_source
+from compiler.nodes import Function, IntegerLiteral, Program, ReturnStatement
 from compiler.semantic import analyze
 
 
@@ -158,12 +160,18 @@ class CodegenTests(unittest.TestCase):
             analyze(program, "")
         self.assertEqual(caught.exception.code, "E0202")
 
+    def test_source_filename_is_escaped_as_utf8_bytes(self):
+        escaped = _escape_llvm_string('quote" slash\\ newline\n snowman-☃.ocl')
+        self.assertEqual(escaped, r"quote\22 slash\5C newline\0A snowman-\E2\98\83.ocl")
+        _, ir = compile_source(VALID, 'quote"\\\n.ocl')
+        self.assertIn(r'source_filename = "quote\22\5C\0A.ocl"', ir)
+
 
 class CliTests(unittest.TestCase):
-    def _run(self, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    def _run(self, *args: str, env: dict | None = None, cwd: str | None = None) -> subprocess.CompletedProcess:
         return subprocess.run(
             [sys.executable, str(ROOT / "oclc.py"), *args],
-            capture_output=True, text=True, env=env,
+            capture_output=True, text=True, env=env, cwd=cwd,
         )
 
     def _write(self, directory: str, name: str, source: str, encoding: str = "utf-8") -> str:
@@ -228,6 +236,40 @@ class CliTests(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 1)
         self.assertIn("OCL_CLANG", result.stderr)
+
+    def test_build_does_not_clobber_source_adjacent_ir(self):
+        from compiler.cli import _clang
+        if not _clang():
+            self.skipTest("LLVM/Clang is not installed on this host")
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(self._write(directory, "hello.ocl", VALID))
+            neighboring_ir = source.with_suffix(".ll")
+            neighboring_ir.write_text("user-owned", encoding="utf-8")
+            output = Path(directory) / ("hello.exe" if os.name == "nt" else "hello")
+            result = self._run("build", str(source), "-o", str(output))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(neighboring_ir.read_text(encoding="utf-8"), "user-owned")
+
+    def test_dash_prefixed_source_cannot_become_a_clang_argument(self):
+        from compiler.cli import _clang
+        if not _clang():
+            self.skipTest("LLVM/Clang is not installed on this host")
+        with tempfile.TemporaryDirectory() as directory:
+            self._write(directory, "-warning.ocl", VALID)
+            output = Path(directory) / ("out.exe" if os.name == "nt" else "out")
+            result = self._run("build", "./-warning.ocl", "-o", str(output), cwd=directory)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(output.is_file())
+
+    def test_external_clang_exit_code_is_normalized(self):
+        completed = subprocess.CompletedProcess([], 70, "", "synthetic clang failure\n")
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(cli, "_clang", return_value=sys.executable), mock.patch.object(cli.subprocess, "run", return_value=completed):
+            source = self._write(directory, "hello.ocl", VALID)
+            output = str(Path(directory) / "out")
+            with mock.patch("sys.stderr") as stderr:
+                result = cli.main(["build", source, "-o", output])
+        self.assertEqual(result, 1)
+        stderr.write.assert_called()
 
 
 class NativeTests(unittest.TestCase):
