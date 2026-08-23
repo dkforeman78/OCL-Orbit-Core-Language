@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .nodes import BinaryExpression, CallExpression, Expression, I32_MAX, IdentifierExpression, IntegerLiteral, Program
-from .diagnostics import DiagnosticError, SourceLocation
+from .diagnostics import DiagnosticError, InternalCompilerError, SourceLocation
 
 
 def analyze(program: Program, source: str) -> None:
@@ -34,30 +34,36 @@ def analyze(program: Program, source: str) -> None:
 
 
 def _analyze_expression(expression: Expression, scope: set[str], functions: dict, source: str) -> None:
-    if isinstance(expression, IntegerLiteral):
-        if expression.value > I32_MAX:
-            raise DiagnosticError("E0203", "integer literal does not fit in i32", source, expression.location)
-        return
-    if isinstance(expression, IdentifierExpression):
-        if expression.name not in scope:
-            raise DiagnosticError("E0206", f"unknown identifier '{expression.name}'", source, expression.location)
-        return
-    if isinstance(expression, BinaryExpression):
-        _analyze_expression(expression.left, scope, functions, source)
-        _analyze_expression(expression.right, scope, functions, source)
-        return
-    if isinstance(expression, CallExpression):
-        callee = functions.get(expression.callee)
-        if callee is None:
-            raise DiagnosticError("E0207", f"unknown function '{expression.callee}'", source, expression.location)
-        if len(expression.arguments) != len(callee.parameters):
-            raise DiagnosticError(
-                "E0208",
-                f"function '{expression.callee}' expects {len(callee.parameters)} argument(s), got {len(expression.arguments)}",
-                source,
-                expression.location,
-            )
-        for argument in expression.arguments:
-            _analyze_expression(argument, scope, functions, source)
-        return
-    raise TypeError(f"unsupported expression node: {type(expression).__name__}")
+    """Validate one expression tree.
+
+    Walks with an explicit stack rather than recursing: expression depth is
+    bounded only by the source, and a deep but valid program must produce a
+    binary, not a RecursionError. Operands are pushed reversed so errors are
+    still reported leftmost-first, as a reader expects.
+    """
+    pending: list[Expression] = [expression]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, IntegerLiteral):
+            if node.value > I32_MAX:
+                raise DiagnosticError("E0203", "integer literal does not fit in i32", source, node.location)
+        elif isinstance(node, IdentifierExpression):
+            if node.name not in scope:
+                raise DiagnosticError("E0206", f"unknown identifier '{node.name}'", source, node.location)
+        elif isinstance(node, BinaryExpression):
+            pending.append(node.right)
+            pending.append(node.left)
+        elif isinstance(node, CallExpression):
+            callee = functions.get(node.callee)
+            if callee is None:
+                raise DiagnosticError("E0207", f"unknown function '{node.callee}'", source, node.location)
+            if len(node.arguments) != len(callee.parameters):
+                raise DiagnosticError(
+                    "E0208",
+                    f"function '{node.callee}' expects {len(callee.parameters)} argument(s), got {len(node.arguments)}",
+                    source,
+                    node.location,
+                )
+            pending.extend(reversed(node.arguments))
+        else:
+            raise InternalCompilerError(f"unsupported expression node: {type(node).__name__}")

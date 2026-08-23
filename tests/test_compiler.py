@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
@@ -73,6 +74,15 @@ class FrontendTests(DiagnosticAssertions):
 
     def test_parameter_list_rejects_trailing_comma(self):
         self.assertDiagnostic("fn add(a: i32,) -> i32 { return a; } fn main() -> i32 { return 0; }", "E0100", "expected parameter after ','")
+
+    def test_argument_list_rejects_trailing_comma(self):
+        # L2: the symmetric case to the parameter list above.
+        source = "fn id(a: i32) -> i32 { return a; }\nfn main() -> i32 { return id(1,); }\n"
+        self.assertDiagnostic(source, "E0100", "expected argument after ','")
+
+    def test_argument_list_rejects_trailing_comma_after_several(self):
+        source = "fn add(a: i32, b: i32) -> i32 { return a + b; }\nfn main() -> i32 { return add(1, 2,); }\n"
+        self.assertDiagnostic(source, "E0100", "expected argument after ','")
 
     def test_negative_literal_is_rejected(self):
         # 0.1 has no unary minus, and '-' must not be silently absorbed by '->'.
@@ -427,7 +437,195 @@ class ToolchainCheckTests(unittest.TestCase):
         self.assertIn("satisfies", captured.getvalue())
 
 
+class ExpressionDepthTests(DiagnosticAssertions):
+    """H1: valid expressions must never reach a Python RecursionError."""
+
+    def test_long_addition_chain_compiles(self):
+        # Addition chains parse iteratively but build a deep tree that semantic
+        # analysis and lowering have to walk without recursing.
+        terms = 5000
+        _, ir = compile_source("fn main() -> i32 { return " + "+".join(["1"] * terms) + "; }")
+        self.assertEqual(ir.count("add i32"), terms - 1)
+
+    def test_very_long_addition_chain_still_compiles(self):
+        terms = 20000
+        _, ir = compile_source("fn main() -> i32 { return " + "+".join(["1"] * terms) + "; }")
+        self.assertEqual(ir.count("add i32"), terms - 1)
+
+    def test_deeply_nested_calls_within_the_limit_compile(self):
+        depth = 200
+        source = ("fn id(a: i32) -> i32 { return a; }\nfn main() -> i32 { return "
+                  + "id(" * depth + "1" + ")" * depth + "; }\n")
+        _, ir = compile_source(source)
+        self.assertEqual(ir.count("call i32 @id"), depth)
+
+    def test_excessive_nesting_is_a_diagnostic_not_a_crash(self):
+        depth = 5000
+        source = ("fn id(a: i32) -> i32 { return a; }\nfn main() -> i32 { return "
+                  + "id(" * depth + "1" + ")" * depth + "; }\n")
+        self.assertDiagnostic(source, "E0101", "nested too deeply")
+
+    def test_deep_nesting_through_the_cli_reports_cleanly(self):
+        # The user-visible failure must be a diagnostic, never a traceback.
+        depth = 5000
+        source = ("fn id(a: i32) -> i32 { return a; }\nfn main() -> i32 { return "
+                  + "id(" * depth + "1" + ")" * depth + "; }\n")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "deep.ocl"
+            path.write_text(source, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "check", str(path)],
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNotIn("RecursionError", result.stderr)
+        self.assertIn("error[E0101]", result.stderr)
+
+    def test_long_chain_through_the_cli_does_not_crash(self):
+        source = "fn main() -> i32 { return " + "+".join(["1"] * 5000) + "; }"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chain.ocl"
+            path.write_text(source, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "check", str(path)],
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+
+class GeneratedIdentifierTests(unittest.TestCase):
+    """M1: compiler-generated LLVM names must not collide with user identifiers."""
+
+    RESERVED_LIKE = ("entry", "ocl", "add", "main", "i32", "v", "t0")
+
+    def test_parameter_named_entry_lowers_to_valid_ir(self):
+        _, ir = compile_source("fn f(entry: i32) -> i32 { return entry; }\nfn main() -> i32 { return f(42); }\n")
+        self.assertIn("i32 %entry", ir)
+
+    def test_generated_block_label_is_namespaced_away_from_user_names(self):
+        # The entry block must live in a namespace no OCL identifier can reach.
+        _, ir = compile_source(VALID)
+        label = next(line for line in ir.splitlines() if line.endswith(":"))
+        self.assertIn(".", label, "generated label must use a '.' the OCL lexer cannot produce")
+
+    def test_no_user_identifier_can_collide_with_a_generated_name(self):
+        for name in self.RESERVED_LIKE:
+            with self.subTest(name=name):
+                source = (f"fn f({name}: i32) -> i32 {{ return {name}; }}\n"
+                          f"fn main() -> i32 {{ return f(42); }}\n")
+                _, ir = compile_source(source)
+                self.assertIn(f"i32 %{name}", ir)
+
+
+class EvaluationOrderTests(unittest.TestCase):
+    """Operands lower left to right, and the IR must show it."""
+
+    def test_sibling_calls_are_emitted_left_to_right(self):
+        # Leaf operands emit no instructions, so only sibling calls can reveal
+        # the order. It is a semantic commitment the moment anything has effects.
+        source = ("fn l(a: i32) -> i32 { return a; }\n"
+                  "fn r(a: i32) -> i32 { return a; }\n"
+                  "fn main() -> i32 { return l(1) + r(2); }\n")
+        _, ir = compile_source(source)
+        body = [line.strip() for line in ir.splitlines() if "call" in line or "add" in line]
+        self.assertEqual(body, [
+            "%0 = call i32 @l(i32 1)",
+            "%1 = call i32 @r(i32 2)",
+            "%2 = add i32 %0, %1",
+        ])
+
+    def test_call_arguments_are_emitted_left_to_right(self):
+        source = ("fn l(a: i32) -> i32 { return a; }\n"
+                  "fn r(a: i32) -> i32 { return a; }\n"
+                  "fn two(a: i32, b: i32) -> i32 { return a + b; }\n"
+                  "fn main() -> i32 { return two(l(1), r(2)); }\n")
+        _, ir = compile_source(source)
+        body = [line.strip() for line in ir.splitlines() if "call" in line]
+        self.assertEqual(body, [
+            "%0 = call i32 @l(i32 1)",
+            "%1 = call i32 @r(i32 2)",
+            "%2 = call i32 @two(i32 %0, i32 %1)",
+        ])
+
+
+class UnknownNodeTests(unittest.TestCase):
+    """I2: both passes must fail as an internal error, never a bare exception."""
+
+    @dataclass(frozen=True)
+    class _Unsupported:
+        location: SourceLocation
+
+    def _program(self):
+        location = SourceLocation(0, 1, 1)
+        node = self._Unsupported(location)
+        return Program((Function("main", "i32", (ReturnStatement(node, location),), location),))
+
+    def test_semantic_rejects_an_unknown_node_as_an_internal_error(self):
+        with self.assertRaises(InternalCompilerError):
+            analyze(self._program(), "")
+
+    def test_codegen_rejects_an_unknown_node_as_an_internal_error(self):
+        with self.assertRaises(InternalCompilerError):
+            generate_llvm_ir(self._program())
+
+
+class OverflowSemanticsTests(unittest.TestCase):
+    """M2: i32 arithmetic is defined as two's-complement wrapping."""
+
+    def test_addition_does_not_request_poison_on_overflow(self):
+        # nsw/nuw would make overflow undefined; OCL defines it as wrapping.
+        _, ir = compile_source("fn main() -> i32 { return 2147483647 + 1; }")
+        self.assertIn("add i32 2147483647, 1", ir)
+        self.assertNotIn("nsw", ir)
+        self.assertNotIn("nuw", ir)
+
+    def test_overflowing_addition_is_accepted(self):
+        program, _ = compile_source("fn main() -> i32 { return 2147483647 + 1; }")
+        self.assertEqual(len(program.functions), 1)
+
+    def test_literal_boundary_is_still_enforced(self):
+        # Wrapping applies to arithmetic, not to literals, which stay bounded.
+        _, ir = compile_source("fn main() -> i32 { return 2147483647; }")
+        self.assertIn("ret i32 2147483647", ir)
+        with self.assertRaises(DiagnosticError) as caught:
+            compile_source("fn main() -> i32 { return 2147483648; }")
+        self.assertEqual(caught.exception.code, "E0203")
+
+
 class NativeTests(unittest.TestCase):
+    def test_wrapping_arithmetic_produces_the_documented_value(self):
+        # M2 boundary test. 2147483647 + 2147483647 wraps to -2, and -2 + 44 is
+        # 42, so the documented semantics are observable as a real exit code on
+        # every platform rather than only in the IR.
+        require_clang()
+        source = "fn main() -> i32 { return 2147483647 + 2147483647 + 44; }\n"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "wrap.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / ("wrap.exe" if os.name == "nt" else "wrap")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
+
+    def test_parameter_named_entry_builds_and_runs(self):
+        require_clang()
+        source = "fn f(entry: i32) -> i32 { return entry; }\nfn main() -> i32 { return f(42); }\n"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "entry.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / ("entry.exe" if os.name == "nt" else "entry")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
+
     def test_native_build_and_exit_value(self):
         require_clang()
         with tempfile.TemporaryDirectory() as directory:

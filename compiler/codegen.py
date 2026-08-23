@@ -1,6 +1,13 @@
 from .nodes import BinaryExpression, CallExpression, Expression, IdentifierExpression, IntegerLiteral, Program
 from .diagnostics import InternalCompilerError
 
+# Compiler-generated LLVM names live under a reserved prefix. The OCL lexer
+# cannot produce '.' in an identifier, so nothing a user writes can collide with
+# a generated name. Numbered temporaries are safe for the same reason: an OCL
+# identifier can never begin with a digit.
+GENERATED_PREFIX = "ocl."
+ENTRY_LABEL = f"{GENERATED_PREFIX}entry"
+
 
 def _escape_llvm_string(value: str) -> str:
     """Encode UTF-8 bytes for an LLVM quoted string."""
@@ -27,27 +34,56 @@ def generate_llvm_ir(program: Program, source_name: str = "input.ocl") -> str:
         body_lines: list[str] = []
         temporary = [0]
         value = _lower_expression(function.body[0].expression, body_lines, temporary)
-        lines.extend((f"define i32 @{function.name}({parameters}) {{", "entry:", *body_lines, f"  ret i32 {value}", "}", ""))
+        lines.extend((f"define i32 @{function.name}({parameters}) {{", f"{ENTRY_LABEL}:", *body_lines, f"  ret i32 {value}", "}", ""))
     return "\n".join(lines)
 
 
-def _lower_expression(expression: Expression, lines: list[str], temporary: list[int]) -> str:
-    if isinstance(expression, IntegerLiteral):
-        return str(expression.value)
-    if isinstance(expression, IdentifierExpression):
-        return f"%{expression.name}"
+def _operands(expression: Expression) -> tuple[Expression, ...]:
     if isinstance(expression, BinaryExpression):
-        left = _lower_expression(expression.left, lines, temporary)
-        right = _lower_expression(expression.right, lines, temporary)
-        result = f"%{temporary[0]}"
-        temporary[0] += 1
-        lines.append(f"  {result} = add i32 {left}, {right}")
-        return result
+        return (expression.left, expression.right)
     if isinstance(expression, CallExpression):
-        arguments = [_lower_expression(argument, lines, temporary) for argument in expression.arguments]
+        return expression.arguments
+    return ()
+
+
+def _lower_expression(expression: Expression, lines: list[str], temporary: list[int]) -> str:
+    """Lower one expression to an SSA operand.
+
+    Walks the tree with an explicit stack. Expression depth is bounded only by
+    the source, so recursing here would turn a large but valid program into a
+    RecursionError instead of a compiled binary.
+    """
+    results: dict[int, str] = {}
+    pending: list[tuple[Expression, bool]] = [(expression, False)]
+    while pending:
+        node, operands_ready = pending.pop()
+        if not operands_ready:
+            if isinstance(node, IntegerLiteral):
+                results[id(node)] = str(node.value)
+                continue
+            if isinstance(node, IdentifierExpression):
+                results[id(node)] = f"%{node.name}"
+                continue
+            if not isinstance(node, (BinaryExpression, CallExpression)):
+                raise InternalCompilerError(f"unsupported expression reached codegen: {type(node).__name__}")
+            # Revisit this node once its operands have been lowered, and push
+            # them reversed so they are emitted left to right. A call with no
+            # arguments simply has nothing to push.
+            pending.append((node, True))
+            pending.extend((operand, False) for operand in reversed(_operands(node)))
+            continue
         result = f"%{temporary[0]}"
         temporary[0] += 1
-        rendered = ", ".join(f"i32 {argument}" for argument in arguments)
-        lines.append(f"  {result} = call i32 @{expression.callee}({rendered})")
-        return result
-    raise InternalCompilerError(f"unsupported expression reached codegen: {type(expression).__name__}")
+        if isinstance(node, BinaryExpression):
+            left = results[id(node.left)]
+            right = results[id(node.right)]
+            # No nsw/nuw: OCL defines i32 arithmetic as two's-complement
+            # wrapping, so overflow must stay defined rather than become poison.
+            lines.append(f"  {result} = add i32 {left}, {right}")
+        elif isinstance(node, CallExpression):
+            rendered = ", ".join(f"i32 {results[id(argument)]}" for argument in node.arguments)
+            lines.append(f"  {result} = call i32 @{node.callee}({rendered})")
+        else:
+            raise InternalCompilerError(f"unsupported expression reached codegen: {type(node).__name__}")
+        results[id(node)] = result
+    return results[id(expression)]

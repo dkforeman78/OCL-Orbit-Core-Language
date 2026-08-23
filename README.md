@@ -68,10 +68,13 @@ Prototype 0.2 supports `i32` function parameters, parameter references, addition
 
 There is intentionally no variables, control flow, subtraction, parenthesized expressions, `.oxr`/`.ofx` generation, custom linker, stabilized OCL ABI, ownership model, package manager, or standard library yet. Native builds use the host format until the canonical Orbit executable specification is supplied.
 
-Windows 0.1 executables are linked without the MSVC C runtime and enter directly
-at `main`. This is safe for the current literal-return-only subset and avoids an
-unnecessary Visual Studio dependency. A proper runtime entry point and C ABI
-linking strategy must be designed before library calls or arguments are added.
+Windows executables are linked without the MSVC C runtime and enter directly at
+`main`, which avoids an unnecessary Visual Studio dependency. This holds for 0.2's
+parameters and OCL-to-OCL calls, and the conditions that would invalidate it —
+frames larger than a page, static initializers, any C runtime or system-library
+call, or a need for `argc`/`argv` — are listed in
+[the architecture overview](docs/ARCHITECTURE.md). A proper runtime entry point
+and C ABI linking strategy must be designed before any of those appear.
 The Windows-only linker flags assume Clang's PE/COFF-compatible linker interface;
 they do not select or stabilize a target triple. Clang selects the native host
 target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.1 claim.

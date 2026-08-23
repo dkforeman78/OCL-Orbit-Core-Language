@@ -7,6 +7,15 @@
 - Added two-pass function resolution, argument-count validation, and new diagnostics for duplicate parameters, unknown names/functions, invalid arity, and invalid `main` parameters.
 - Added LLVM lowering for parameters, calls, and arithmetic plus the `add(20, 22)` native acceptance program.
 
+### Fixed after independent review
+
+- Semantic analysis and LLVM lowering now walk expressions with an explicit stack, so deeply nested valid expressions compile instead of raising `RecursionError`.
+- The parser bounds expression nesting at 256 levels and reports `E0101` rather than relying on the interpreter stack limit.
+- Compiler-generated LLVM names are confined to a reserved namespace (`ocl.entry`, numeric temporaries), so a parameter named `entry` no longer produces IR that LLVM rejects.
+- Documented `i32` arithmetic as defined two's-complement wrapping, with a native boundary test.
+- Restated the Windows CRT-free entry envelope in terms of what invalidates it, and refreshed stale 0.1 references in the 0.2 documentation.
+- Added the missing trailing-comma rejection test for argument lists, and made semantic analysis raise `InternalCompilerError` rather than `TypeError` on an unrecognised node.
+
 ## 0.1.0 - 2026-08-18
 
 - Added source loading, lexer, parser, AST, semantic validation, diagnostics, LLVM IR generation, Clang integration, CLI, documentation, example, and automated tests.

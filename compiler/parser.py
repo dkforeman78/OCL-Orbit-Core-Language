@@ -17,12 +17,19 @@ from .lexer import Token, TokenKind
 
 _MAX_I32_DIGITS = len(str(I32_MAX))
 
+# Recursive descent nests one Python frame per level of parenthesised call, so
+# the accepted depth is bounded deliberately here rather than left to whatever
+# the interpreter's stack happens to allow. Real source never approaches this;
+# machine-generated source can, and must get a diagnostic instead of a crash.
+MAX_EXPRESSION_DEPTH = 256
+
 
 class Parser:
     def __init__(self, tokens: list[Token], source: str):
         self.tokens = tokens
         self.source = source
         self.current = 0
+        self.depth = 0
 
     def parse(self) -> Program:
         functions: list[Function] = []
@@ -66,11 +73,24 @@ class Parser:
         return ReturnStatement(expression, start.location)
 
     def _expression(self) -> Expression:
-        expression = self._primary()
-        while self._match(TokenKind.PLUS):
-            operator = self.tokens[self.current - 1]
-            expression = BinaryExpression(expression, operator.lexeme, self._primary(), operator.location)
-        return expression
+        self.depth += 1
+        if self.depth > MAX_EXPRESSION_DEPTH:
+            raise DiagnosticError(
+                "E0101",
+                f"expression is nested too deeply; OCL 0.2 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                self.source,
+                self.tokens[self.current].location,
+            )
+        try:
+            # Addition is folded iteratively, so a long chain costs no depth;
+            # only nested calls actually nest.
+            expression = self._primary()
+            while self._match(TokenKind.PLUS):
+                operator = self.tokens[self.current - 1]
+                expression = BinaryExpression(expression, operator.lexeme, self._primary(), operator.location)
+            return expression
+        finally:
+            self.depth -= 1
 
     def _primary(self) -> Expression:
         if self._at(TokenKind.INTEGER):

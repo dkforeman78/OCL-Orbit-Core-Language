@@ -29,12 +29,27 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
 - Calls must resolve to a declared function and supply exactly its declared number of arguments.
 - `main` must have no parameters.
 - Duplicate function names are rejected.
-- `main` is emitted using LLVM's default host calling convention. On Windows
-  Prototype 0.1 links it directly as the CRT-free executable entry point. No
-  broader OCL ABI or runtime contract is stabilized.
+- **`i32` arithmetic wraps.** Addition is evaluated modulo 2^32 in two's-complement
+  representation, so `2147483647 + 1` is defined and equals `-2147483648`. Overflow is
+  never undefined behaviour, and never a diagnostic. OCL chooses this deliberately
+  rather than inheriting C's undefined signed overflow. Checked or saturating
+  arithmetic, and any syntax that would select them, are open questions for a later
+  milestone. Integer *literals* are a separate matter and remain bounded by `i32`
+  (`E0203`).
+- Expressions may nest at most 256 levels deep; exceeding that is a diagnostic
+  (`E0101`), never a compiler failure. Addition chains are folded iteratively and
+  cost no nesting depth, so the limit is reached only through nested calls. The
+  limit is an implementation bound, not a language constant, and may rise.
+- `main` is emitted using LLVM's default host calling convention. On Windows it is
+  linked directly as the CRT-free executable entry point. No broader OCL ABI or
+  runtime contract is stabilized.
 - Every source function is currently emitted as an externally visible LLVM
   definition with its source identifier as the symbol name. Linkage, mangling,
   visibility, cross-module uniqueness, and foreign-call behavior are provisional.
+- Names the compiler generates in LLVM IR are confined to a reserved namespace:
+  they either contain `.` (such as the `ocl.entry` block label) or are purely
+  numeric (SSA temporaries). An OCL identifier can be neither, so no source name
+  can ever collide with a generated one.
 - The Windows loader invokes the CRT-free `main` entry directly and observes its
   returned `i32` as the process exit status on the verified x86-64 host. This is
   only a bootstrap mechanism; argument passing, initialization, teardown, and a
@@ -43,4 +58,4 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
 
 ## Safety and compatibility status
 
-Prototype 0.1 has no pointers, allocation, ownership, references, or concurrency, so it makes no permanent memory-model decision. Integer literals are range checked. The textual syntax, OCL ABI, and executable format remain provisional.
+Prototype 0.2 has no pointers, allocation, ownership, references, or concurrency, so it makes no permanent memory-model decision. Integer literals are range checked, and integer arithmetic has the defined wrapping behaviour described above — that is 0.2's one deliberate semantic commitment. The textual syntax, OCL ABI, and executable format remain provisional.
