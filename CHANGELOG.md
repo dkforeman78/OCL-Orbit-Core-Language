@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 - Unreleased
+
+- Added typed `i32` function parameters and parameter references.
+- Added left-associative integer addition and function-call expressions.
+- Added two-pass function resolution, argument-count validation, and new diagnostics for duplicate parameters, unknown names/functions, invalid arity, and invalid `main` parameters.
+- Added LLVM lowering for parameters, calls, and arithmetic plus the `add(20, 22)` native acceptance program.
+
 ## 0.1.0 - 2026-08-18
 
 - Added source loading, lexer, parser, AST, semantic validation, diagnostics, LLVM IR generation, Clang integration, CLI, documentation, example, and automated tests.

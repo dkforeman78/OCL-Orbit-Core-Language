@@ -8,7 +8,7 @@
 4. `codegen` lowers the validated AST to textual LLVM IR.
 5. `cli` invokes Clang for LLVM compilation and host-native linking.
 
-Direct AST-to-LLVM lowering is limited to the bootstrap. An Orbit IR layer can be inserted later without changing the lexer, parser, or command surface. Diagnostics carry stable-looking codes for tooling, but codes are provisional during 0.x.
+Direct AST-to-LLVM lowering is limited to the bootstrap. The 0.2 semantic pass first collects function signatures, then validates bodies, allowing forward calls without coupling name resolution to source order. Expression lowering recursively emits deterministic LLVM SSA temporaries. An Orbit IR layer can be inserted later without changing the lexer, parser, or command surface. Diagnostics carry stable-looking codes for tooling, but codes are provisional during 0.x.
 
 LLVM and the host linker own object format, calling convention, target selection, optimization, and machine-code generation. This avoids prematurely defining the OCL ABI or the Orbit `.oxr` format.
 

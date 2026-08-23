@@ -1,6 +1,6 @@
 # OCL — Orbit Core Language
 
-OCL Compiler Prototype 0.1 proves the bootstrap path from `.ocl` source through a modular frontend and LLVM IR to a host-native executable.
+OCL Compiler Prototype 0.2 extends the proven bootstrap path with typed function parameters, identifiers, addition, and function calls.
 
 ## Prerequisites
 
@@ -27,6 +27,10 @@ ARM64 validation are roadmap work, not 0.1 claims.
 .\oclc.cmd emit-ir examples\hello.ocl -o hello.ll
 .\oclc.cmd build examples\hello.ocl -o hello.exe
 .\hello.exe
+$LASTEXITCODE # 42
+
+.\oclc.cmd build examples\add.ocl -o add.exe
+.\add.exe
 $LASTEXITCODE # 42
 ```
 
@@ -60,9 +64,9 @@ minimum.
 
 ## Scope and limitations
 
-Prototype 0.1 supports functions with no parameters, the `i32` type, a single return statement, and non-negative integer literals. See [the language specification](docs/OCL_LANGUAGE_SPEC.md) and [architecture overview](docs/ARCHITECTURE.md). Arithmetic and function calls are the next milestone.
+Prototype 0.2 supports `i32` function parameters, parameter references, addition, function calls, a single return statement, and non-negative integer literals. See [the language specification](docs/OCL_LANGUAGE_SPEC.md) and [architecture overview](docs/ARCHITECTURE.md).
 
-There is intentionally no `.oxr`/`.ofx` generation, custom linker, stabilized OCL ABI, ownership model, package manager, or standard library yet. Native builds use the host format until the canonical Orbit executable specification is supplied.
+There is intentionally no variables, control flow, subtraction, parenthesized expressions, `.oxr`/`.ofx` generation, custom linker, stabilized OCL ABI, ownership model, package manager, or standard library yet. Native builds use the host format until the canonical Orbit executable specification is supplied.
 
 Windows 0.1 executables are linked without the MSVC C runtime and enter directly
 at `main`. This is safe for the current literal-return-only subset and avoids an

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 from .diagnostics import SourceLocation
@@ -14,8 +16,39 @@ class IntegerLiteral:
 
 
 @dataclass(frozen=True)
+class IdentifierExpression:
+    name: str
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class BinaryExpression:
+    left: Expression
+    operator: str
+    right: Expression
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class CallExpression:
+    callee: str
+    arguments: tuple[Expression, ...]
+    location: SourceLocation
+
+
+Expression = IntegerLiteral | IdentifierExpression | BinaryExpression | CallExpression
+
+
+@dataclass(frozen=True)
 class ReturnStatement:
-    expression: IntegerLiteral
+    expression: Expression
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class Parameter:
+    name: str
+    type_name: str
     location: SourceLocation
 
 
@@ -25,6 +58,7 @@ class Function:
     return_type: str
     body: tuple[ReturnStatement, ...]
     location: SourceLocation
+    parameters: tuple[Parameter, ...] = ()
 
 
 @dataclass(frozen=True)

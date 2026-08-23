@@ -39,15 +39,19 @@ jobs:
           OCL_REQUIRE_CLANG: "1"
         run: python -m unittest discover -s tests -v
 
-      # Contract section 18, run as documented: build, execute, expect 42.
-      - name: Acceptance test
+      # Preserve the 0.1 contract and prove the 0.2 parameters/calls milestone.
+      - name: Acceptance tests
         shell: bash
         run: |
           python oclc.py build examples/hello.ocl
-          if [ "$RUNNER_OS" = "Windows" ]; then exe=examples/hello.exe; else exe=examples/hello; fi
-          set +e
-          "./$exe"
-          code=$?
-          set -e
-          echo "exit code: $code"
-          test "$code" -eq 42
+          python oclc.py build examples/add.ocl
+          if [ "$RUNNER_OS" = "Windows" ]; then suffix=.exe; else suffix=; fi
+          for program in hello add; do
+            exe="examples/${program}${suffix}"
+            set +e
+            "./$exe"
+            code=$?
+            set -e
+            echo "$program exit code: $code"
+            test "$code" -eq 42
+          done
