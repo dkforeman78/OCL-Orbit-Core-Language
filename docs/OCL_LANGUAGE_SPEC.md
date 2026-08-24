@@ -29,13 +29,13 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
 - Calls must resolve to a declared function and supply exactly its declared number of arguments.
 - `main` must have no parameters.
 - Duplicate function names are rejected.
-- **`i32` arithmetic wraps.** Addition is evaluated modulo 2^32 in two's-complement
-  representation, so `2147483647 + 1` is defined and equals `-2147483648`. Overflow is
-  never undefined behaviour, and never a diagnostic. OCL chooses this deliberately
-  rather than inheriting C's undefined signed overflow. Checked or saturating
-  arithmetic, and any syntax that would select them, are open questions for a later
-  milestone. Integer *literals* are a separate matter and remain bounded by `i32`
-  (`E0203`).
+- **Prototype 0.2 `i32` addition wraps.** Addition is evaluated modulo 2^32 in
+  two's-complement representation, so `2147483647 + 1` is defined and equals
+  `-2147483648`. The prototype never inherits C's undefined signed overflow.
+  This records and tests the current implementation; it does **not** stabilize
+  OCL's permanent overflow policy. Checked, wrapping, or saturating behavior may
+  later differ by Safe/Systems/Bare profile, subject to design-authority review.
+  Integer *literals* are separate and remain bounded by `i32` (`E0203`).
 - Expressions may nest at most 256 levels deep; exceeding that is a diagnostic
   (`E0101`), never a compiler failure. Addition chains are folded iteratively and
   cost no nesting depth, so the limit is reached only through nested calls. The
@@ -58,4 +58,4 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
 
 ## Safety and compatibility status
 
-Prototype 0.2 has no pointers, allocation, ownership, references, or concurrency, so it makes no permanent memory-model decision. Integer literals are range checked, and integer arithmetic has the defined wrapping behaviour described above — that is 0.2's one deliberate semantic commitment. The textual syntax, OCL ABI, and executable format remain provisional.
+Prototype 0.2 has no pointers, allocation, ownership, references, or concurrency, so it makes no permanent memory-model decision. Integer literals are range checked, and arithmetic uses the provisional, defined wrapping behavior described above. The final overflow policy, textual syntax, OCL ABI, and executable format remain provisional.

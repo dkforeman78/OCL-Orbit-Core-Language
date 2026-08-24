@@ -77,8 +77,9 @@ def _lower_expression(expression: Expression, lines: list[str], temporary: list[
         if isinstance(node, BinaryExpression):
             left = results[id(node.left)]
             right = results[id(node.right)]
-            # No nsw/nuw: OCL defines i32 arithmetic as two's-complement
-            # wrapping, so overflow must stay defined rather than become poison.
+            # No nsw/nuw: Prototype 0.2 implements i32 addition as wrapping, so
+            # overflow must stay defined rather than become LLVM poison. The
+            # permanent profile-specific overflow policy remains provisional.
             lines.append(f"  {result} = add i32 {left}, {right}")
         elif isinstance(node, CallExpression):
             rendered = ", ".join(f"i32 {results[id(argument)]}" for argument in node.arguments)

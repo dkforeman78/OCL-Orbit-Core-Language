@@ -12,7 +12,7 @@
 - Semantic analysis and LLVM lowering now walk expressions with an explicit stack, so deeply nested valid expressions compile instead of raising `RecursionError`.
 - The parser bounds expression nesting at 256 levels and reports `E0101` rather than relying on the interpreter stack limit.
 - Compiler-generated LLVM names are confined to a reserved namespace (`ocl.entry`, numeric temporaries), so a parameter named `entry` no longer produces IR that LLVM rejects.
-- Documented `i32` arithmetic as defined two's-complement wrapping, with a native boundary test.
+- Documented Prototype 0.2 `i32` addition as defined two's-complement wrapping, with a native boundary test, while leaving the permanent profile-specific overflow policy open for design review.
 - Restated the Windows CRT-free entry envelope in terms of what invalidates it, and refreshed stale 0.1 references in the 0.2 documentation.
 - Added the missing trailing-comma rejection test for argument lists, and made semantic analysis raise `InternalCompilerError` rather than `TypeError` on an unrecognised node.
 

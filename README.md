@@ -77,4 +77,4 @@ call, or a need for `argc`/`argv` — are listed in
 and C ABI linking strategy must be designed before any of those appear.
 The Windows-only linker flags assume Clang's PE/COFF-compatible linker interface;
 they do not select or stabilize a target triple. Clang selects the native host
-target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.1 claim.
+target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.2 claim.
