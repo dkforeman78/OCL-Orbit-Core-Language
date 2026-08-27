@@ -590,10 +590,12 @@ class ExpressionDepthTests(DiagnosticAssertions):
                 return action()
             return deepen(remaining - 1, action)
 
+        previous_limit = sys.getrecursionlimit()
         for caller_depth in (0, 200, 400):
             with self.subTest(caller_depth=caller_depth):
                 _, ir = deepen(caller_depth, lambda: compile_source(source))
                 self.assertIn("ret i32 42", ir)
+                self.assertEqual(sys.getrecursionlimit(), previous_limit)
 
     def test_frames_per_nesting_level_matches_the_parser(self):
         # FRAMES_PER_LEVEL is what reserves enough stack for the documented

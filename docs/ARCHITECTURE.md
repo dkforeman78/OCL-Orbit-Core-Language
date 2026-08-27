@@ -29,7 +29,9 @@ embedding tool, a language server, a future self-hosted driver — would exhaust
 the stack before the guard could fire, turning a documented diagnostic back into
 a `RecursionError`. `FRAMES_PER_LEVEL` records the per-level cost of the
 `_expression` -> `_term` -> `_primary` chain; a test measures the real slope and
-fails if a new precedence tier makes it stale.
+fails if a new precedence tier makes it stale. Because Python's recursion limit
+is interpreter-global, parse calls are serialized while the temporary limit is
+active so concurrent compiler invocations cannot restore limits out of order.
 
 Every name codegen invents lives in a reserved namespace — either containing `.`,
 such as the `ocl.entry` block label, or purely numeric, such as SSA temporaries.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 
 from .nodes import (
     I32_MAX,
@@ -37,6 +38,11 @@ FRAMES_PER_LEVEL = 3
 
 # Slack for the driver, the CLI and the tail of _primary beyond the recursive call.
 _STACK_MARGIN = 96
+
+# sys.setrecursionlimit affects the whole interpreter. Serialize parse calls so
+# overlapping compiler invocations cannot restore each other's saved limits out
+# of order. RLock also keeps a future same-thread nested parse from deadlocking.
+_RECURSION_LIMIT_LOCK = threading.RLock()
 
 
 class Parser:
@@ -193,11 +199,13 @@ def parse(tokens: list[Token], source: str) -> Program:
     guard could fire. Reserving the frames the bound actually needs keeps the
     documented limit deterministic instead of dependent on the call site.
     """
-    required = MAX_EXPRESSION_DEPTH * FRAMES_PER_LEVEL + _STACK_MARGIN
-    previous_limit = sys.getrecursionlimit()
-    if previous_limit - _stack_depth() < required:
-        sys.setrecursionlimit(_stack_depth() + required)
-    try:
-        return Parser(tokens, source).parse()
-    finally:
-        sys.setrecursionlimit(previous_limit)
+    with _RECURSION_LIMIT_LOCK:
+        required = MAX_EXPRESSION_DEPTH * FRAMES_PER_LEVEL + _STACK_MARGIN
+        previous_limit = sys.getrecursionlimit()
+        stack_depth = _stack_depth()
+        if previous_limit - stack_depth < required:
+            sys.setrecursionlimit(stack_depth + required)
+        try:
+            return Parser(tokens, source).parse()
+        finally:
+            sys.setrecursionlimit(previous_limit)
