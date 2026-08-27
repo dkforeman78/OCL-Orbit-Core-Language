@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 - Unreleased
+## 0.3.0 - 2026-08-27
 
 - Added immutable typed local bindings with declaration-order visibility and no shadowing.
 - Added binary subtraction, multiplication, parenthesized expressions, and conventional arithmetic precedence.
