@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 - Unreleased
+## 0.4.0 - 2026-08-27
 
 - Added the `bool` type and `true`/`false` literals for parameters, locals, function results, and expressions.
 - Added typed equality and signed integer comparison operators with conventional precedence.
