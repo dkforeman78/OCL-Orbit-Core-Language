@@ -13,7 +13,7 @@ from compiler import cli
 from compiler.codegen import _escape_llvm_string, generate_llvm_ir
 from compiler.diagnostics import DiagnosticError, InternalCompilerError, SourceLocation
 from compiler.driver import compile_source
-from compiler.nodes import BinaryExpression, CallExpression, Function, IdentifierExpression, IntegerLiteral, Program, ReturnStatement
+from compiler.nodes import BinaryExpression, CallExpression, Function, IdentifierExpression, IntegerLiteral, LetStatement, Program, ReturnStatement
 from compiler.semantic import analyze
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "tools"))
@@ -85,8 +85,8 @@ class FrontendTests(DiagnosticAssertions):
         self.assertDiagnostic(source, "E0100", "expected argument after ','")
 
     def test_negative_literal_is_rejected(self):
-        # 0.1 has no unary minus, and '-' must not be silently absorbed by '->'.
-        self.assertDiagnostic("fn main() -> i32 { return -1; }", "E0001", "invalid token")
+        # 0.3 has binary subtraction but still has no unary minus.
+        self.assertDiagnostic("fn main() -> i32 { return -1; }", "E0100", "expected expression")
 
 
 class SemanticTests(DiagnosticAssertions):
@@ -214,6 +214,102 @@ class Ocl02Tests(unittest.TestCase):
             executable = Path(directory) / ("add.exe" if os.name == "nt" else "add")
             result = subprocess.run(
                 [sys.executable, str(ROOT / "oclc.py"), "build", str(ROOT / "examples" / "add.ocl"), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
+
+
+class Ocl03Tests(DiagnosticAssertions):
+    SOURCE = (
+        "fn calculate(a: i32, b: i32) -> i32 {\n"
+        "    let product: i32 = a * b;\n"
+        "    let adjusted: i32 = product - 2;\n"
+        "    return adjusted + (2 * 2);\n"
+        "}\n\n"
+        "fn main() -> i32 {\n"
+        "    return calculate(5, 8);\n"
+        "}\n"
+    )
+
+    def test_local_computation_ast(self):
+        program, _ = compile_source(self.SOURCE)
+        calculate = program.functions[0]
+        self.assertEqual(len(calculate.body), 3)
+        self.assertIsInstance(calculate.body[0], LetStatement)
+        self.assertEqual((calculate.body[0].name, calculate.body[0].type_name), ("product", "i32"))
+        self.assertIsInstance(calculate.body[-1], ReturnStatement)
+
+    def test_local_computation_llvm_ir(self):
+        _, ir = compile_source(self.SOURCE, "local.ocl")
+        self.assertIn("%0 = mul i32 %a, %b", ir)
+        self.assertIn("%1 = sub i32 %0, 2", ir)
+        self.assertIn("%2 = mul i32 2, 2", ir)
+        self.assertIn("%3 = add i32 %1, %2", ir)
+        self.assertNotIn("alloca", ir)
+        self.assertNotIn("store", ir)
+
+    def test_multiplication_has_higher_precedence(self):
+        _, ir = compile_source("fn main() -> i32 { return 2 + 3 * 4; }")
+        operations = [line.strip() for line in ir.splitlines() if " = " in line and "i32" in line]
+        self.assertEqual(operations, ["%0 = mul i32 3, 4", "%1 = add i32 2, %0"])
+
+    def test_parentheses_override_precedence(self):
+        _, ir = compile_source("fn main() -> i32 { return (2 + 3) * 4; }")
+        operations = [line.strip() for line in ir.splitlines() if " = " in line and "i32" in line]
+        self.assertEqual(operations, ["%0 = add i32 2, 3", "%1 = mul i32 %0, 4"])
+
+    def test_addition_and_subtraction_are_left_associative(self):
+        _, ir = compile_source("fn main() -> i32 { return 20 - 3 + 25; }")
+        self.assertIn("%0 = sub i32 20, 3", ir)
+        self.assertIn("%1 = add i32 %0, 25", ir)
+
+    def test_earlier_local_is_visible(self):
+        _, ir = compile_source("fn main() -> i32 { let first: i32 = 40; let answer: i32 = first + 2; return answer; }")
+        self.assertIn("%0 = add i32 40, 2", ir)
+        self.assertIn("ret i32 %0", ir)
+
+    def test_local_cannot_reference_itself(self):
+        self.assertDiagnostic("fn main() -> i32 { let answer: i32 = answer; return answer; }", "E0206", "unknown identifier 'answer'")
+
+    def test_local_cannot_reference_a_later_local(self):
+        source = "fn main() -> i32 { let first: i32 = second; let second: i32 = 42; return first; }"
+        self.assertDiagnostic(source, "E0206", "unknown identifier 'second'")
+
+    def test_duplicate_local_is_rejected(self):
+        source = "fn main() -> i32 { let value: i32 = 1; let value: i32 = 2; return value; }"
+        self.assertDiagnostic(source, "E0210", "already declared")
+
+    def test_local_cannot_shadow_parameter(self):
+        source = "fn f(value: i32) -> i32 { let value: i32 = 1; return value; } fn main() -> i32 { return f(42); }"
+        self.assertDiagnostic(source, "E0210", "already declared")
+
+    def test_local_type_must_be_i32(self):
+        self.assertDiagnostic("fn main() -> i32 { let value: i64 = 42; return value; }", "E0200", "unknown type 'i64'")
+
+    def test_return_must_be_the_final_statement(self):
+        source = "fn main() -> i32 { return 1; let value: i32 = 42; }"
+        self.assertDiagnostic(source, "E0202", "end with exactly one return")
+
+    def test_missing_local_initializer_is_rejected(self):
+        self.assertDiagnostic("fn main() -> i32 { let value: i32; return value; }", "E0100", "expected '='")
+
+    def test_local_binding_does_not_replace_the_required_return(self):
+        self.assertDiagnostic("fn main() -> i32 { let value: i32 = 42; }", "E0202", "end with exactly one return")
+
+    def test_missing_closing_parenthesis_is_rejected(self):
+        self.assertDiagnostic("fn main() -> i32 { return (40 + 2; }", "E0100", "expected ')'")
+
+    def test_reassignment_is_not_part_of_ocl_03(self):
+        source = "fn main() -> i32 { let value: i32 = 1; value = 42; return value; }"
+        self.assertDiagnostic(source, "E0100", "expected 'return'")
+
+    def test_native_local_computation_returns_42(self):
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / ("local.exe" if os.name == "nt" else "local")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(ROOT / "examples" / "local.ocl"), "-o", str(executable)],
                 capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -452,6 +548,22 @@ class ExpressionDepthTests(DiagnosticAssertions):
         _, ir = compile_source("fn main() -> i32 { return " + "+".join(["1"] * terms) + "; }")
         self.assertEqual(ir.count("add i32"), terms - 1)
 
+    def test_very_long_multiplication_chain_still_compiles(self):
+        terms = 20000
+        _, ir = compile_source("fn main() -> i32 { return " + "*".join(["1"] * terms) + "; }")
+        self.assertEqual(ir.count("mul i32"), terms - 1)
+
+    def test_deep_parentheses_within_the_limit_compile(self):
+        depth = 200
+        source = "fn main() -> i32 { return " + "(" * depth + "42" + ")" * depth + "; }"
+        _, ir = compile_source(source)
+        self.assertIn("ret i32 42", ir)
+
+    def test_excessive_parentheses_are_a_diagnostic_not_a_crash(self):
+        depth = 5000
+        source = "fn main() -> i32 { return " + "(" * depth + "42" + ")" * depth + "; }"
+        self.assertDiagnostic(source, "E0101", "nested too deeply")
+
     def test_deeply_nested_calls_within_the_limit_compile(self):
         depth = 200
         source = ("fn id(a: i32) -> i32 { return a; }\nfn main() -> i32 { return "
@@ -549,6 +661,14 @@ class EvaluationOrderTests(unittest.TestCase):
             "%2 = call i32 @two(i32 %0, i32 %1)",
         ])
 
+    def test_local_initializers_are_emitted_in_source_order(self):
+        source = ("fn id(a: i32) -> i32 { return a; }\n"
+                  "fn main() -> i32 { let first: i32 = id(1); "
+                  "let second: i32 = id(2); return first + second + 39; }\n")
+        _, ir = compile_source(source)
+        calls = [line.strip() for line in ir.splitlines() if "call i32 @id" in line]
+        self.assertEqual(calls, ["%0 = call i32 @id(i32 1)", "%1 = call i32 @id(i32 2)"])
+
 
 class UnknownNodeTests(unittest.TestCase):
     """I2: both passes must fail as an internal error, never a bare exception."""
@@ -584,6 +704,13 @@ class OverflowSemanticsTests(unittest.TestCase):
     def test_overflowing_addition_is_accepted(self):
         program, _ = compile_source("fn main() -> i32 { return 2147483647 + 1; }")
         self.assertEqual(len(program.functions), 1)
+
+    def test_subtraction_and_multiplication_do_not_request_poison(self):
+        _, ir = compile_source("fn main() -> i32 { return (0 - 1) * 2147483647; }")
+        self.assertIn("sub i32 0, 1", ir)
+        self.assertIn("mul i32", ir)
+        self.assertNotIn("nsw", ir)
+        self.assertNotIn("nuw", ir)
 
     def test_literal_boundary_is_still_enforced(self):
         # Wrapping applies to arithmetic, not to literals, which stay bounded.

@@ -1,0 +1,9 @@
+fn calculate(a: i32, b: i32) -> i32 {
+    let product: i32 = a * b;
+    let adjusted: i32 = product - 2;
+    return adjusted + (2 * 2);
+}
+
+fn main() -> i32 {
+    return calculate(5, 8);
+}

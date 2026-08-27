@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
             ir_path = Path(directory).resolve() / "module.ll"
             ir_path.write_text(ir, encoding="utf-8")
             command = [clang, str(ir_path)]
-            # Prototype 0.1 has no runtime or C-library calls. On Windows,
+            # The current prototype has no runtime or C-library calls. On Windows,
             # linking directly to main keeps the bootstrap independent of the
             # MSVC CRT. These are PE/COFF linker flags, selected only by host OS.
             if os.name == "nt":

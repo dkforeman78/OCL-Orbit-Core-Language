@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from .diagnostics import SourceLocation
 
-# The only integer type in OCL 0.1. Both the parser and the semantic analyzer
+# The only integer type in OCL 0.3. Both the parser and the semantic analyzer
 # bound literals against this, so it lives here rather than in either of them.
 I32_MAX = 2_147_483_647
 
@@ -46,6 +46,17 @@ class ReturnStatement:
 
 
 @dataclass(frozen=True)
+class LetStatement:
+    name: str
+    type_name: str
+    initializer: Expression
+    location: SourceLocation
+
+
+Statement = LetStatement | ReturnStatement
+
+
+@dataclass(frozen=True)
 class Parameter:
     name: str
     type_name: str
@@ -56,7 +67,7 @@ class Parameter:
 class Function:
     name: str
     return_type: str
-    body: tuple[ReturnStatement, ...]
+    body: tuple[Statement, ...]
     location: SourceLocation
     parameters: tuple[Parameter, ...] = ()
 

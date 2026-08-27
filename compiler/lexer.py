@@ -8,6 +8,7 @@ from .diagnostics import DiagnosticError, SourceLocation
 
 class TokenKind(Enum):
     FN = auto()
+    LET = auto()
     RETURN = auto()
     IDENTIFIER = auto()
     INTEGER = auto()
@@ -19,6 +20,9 @@ class TokenKind(Enum):
     COLON = auto()
     COMMA = auto()
     PLUS = auto()
+    MINUS = auto()
+    STAR = auto()
+    EQUAL = auto()
     SEMICOLON = auto()
     EOF = auto()
 
@@ -52,6 +56,11 @@ def lex(source: str) -> list[Token]:
             continue
 
         start = location()
+        if source.startswith("->", index):
+            tokens.append(Token(TokenKind.ARROW, "->", start))
+            index += 2
+            column += 2
+            continue
         single = {
             "(": TokenKind.LEFT_PAREN,
             ")": TokenKind.RIGHT_PAREN,
@@ -60,6 +69,9 @@ def lex(source: str) -> list[Token]:
             ":": TokenKind.COLON,
             ",": TokenKind.COMMA,
             "+": TokenKind.PLUS,
+            "-": TokenKind.MINUS,
+            "*": TokenKind.STAR,
+            "=": TokenKind.EQUAL,
             ";": TokenKind.SEMICOLON,
         }
         if char in single:
@@ -67,17 +79,12 @@ def lex(source: str) -> list[Token]:
             index += 1
             column += 1
             continue
-        if source.startswith("->", index):
-            tokens.append(Token(TokenKind.ARROW, "->", start))
-            index += 2
-            column += 2
-            continue
         if char.isascii() and (char.isalpha() or char == "_"):
             end = index + 1
             while end < len(source) and source[end].isascii() and (source[end].isalnum() or source[end] == "_"):
                 end += 1
             word = source[index:end]
-            kind = {"fn": TokenKind.FN, "return": TokenKind.RETURN}.get(word, TokenKind.IDENTIFIER)
+            kind = {"fn": TokenKind.FN, "let": TokenKind.LET, "return": TokenKind.RETURN}.get(word, TokenKind.IDENTIFIER)
             tokens.append(Token(kind, word, start))
             column += end - index
             index = end

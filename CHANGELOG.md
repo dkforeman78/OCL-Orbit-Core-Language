@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 - Unreleased
+
+- Added immutable typed local bindings with declaration-order visibility and no shadowing.
+- Added binary subtraction, multiplication, parenthesized expressions, and conventional arithmetic precedence.
+- Lowered locals directly through an LLVM SSA value environment without introducing mutable storage or ABI changes.
+- Extended provisional wrapping `i32` arithmetic semantics and expression-depth protection to the new expression forms.
+- Added the `local.ocl` native acceptance program and expanded parser, semantic, IR, stress, evaluation-order, and native tests.
+
 ## 0.2.0 - 2026-08-26
 
 - Added typed `i32` function parameters and parameter references.
