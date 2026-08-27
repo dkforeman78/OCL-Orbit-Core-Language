@@ -16,6 +16,9 @@ class TokenKind(Enum):
     LEFT_BRACE = auto()
     RIGHT_BRACE = auto()
     ARROW = auto()
+    COLON = auto()
+    COMMA = auto()
+    PLUS = auto()
     SEMICOLON = auto()
     EOF = auto()
 
@@ -54,6 +57,9 @@ def lex(source: str) -> list[Token]:
             ")": TokenKind.RIGHT_PAREN,
             "{": TokenKind.LEFT_BRACE,
             "}": TokenKind.RIGHT_BRACE,
+            ":": TokenKind.COLON,
+            ",": TokenKind.COMMA,
+            "+": TokenKind.PLUS,
             ";": TokenKind.SEMICOLON,
         }
         if char in single:
