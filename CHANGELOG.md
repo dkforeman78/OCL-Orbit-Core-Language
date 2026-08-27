@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 - Unreleased
+## 0.2.0 - 2026-08-26
 
 - Added typed `i32` function parameters and parameter references.
 - Added left-associative integer addition and function-call expressions.
