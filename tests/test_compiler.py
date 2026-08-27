@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
@@ -643,6 +644,84 @@ class ExpressionDepthTests(DiagnosticAssertions):
         with self.assertRaises(DiagnosticError) as caught:
             deepen(400, lambda: compile_source(source))
         self.assertEqual(caught.exception.code, "E0101")
+
+    def test_recursion_limit_is_restored_after_a_diagnostic(self):
+        # Force the reservation branch, then prove finally restores the exact
+        # prior value when parsing exits through E0101 rather than success.
+        original_limit = sys.getrecursionlimit()
+        forced_limit = 200
+        source = "fn main() -> i32 { return " + "(" * 5000 + "42" + ")" * 5000 + "; }"
+        try:
+            sys.setrecursionlimit(forced_limit)
+            with self.assertRaises(DiagnosticError) as caught:
+                compile_source(source)
+            self.assertEqual(caught.exception.code, "E0101")
+            self.assertEqual(sys.getrecursionlimit(), forced_limit)
+        finally:
+            sys.setrecursionlimit(original_limit)
+
+    def test_overlapping_parse_calls_are_serialized(self):
+        # Parser.parse is held while the recursion limit may differ from its
+        # baseline. A second thread must not enter until the first releases it,
+        # or their save/restore operations could interleave.
+        first_entered = threading.Event()
+        second_started = threading.Event()
+        second_entered = threading.Event()
+        release_first = threading.Event()
+        invocation = [0]
+        invocation_lock = threading.Lock()
+        errors: list[BaseException] = []
+        original_parse = parser_module.Parser.parse
+
+        def controlled_parse(parser):
+            with invocation_lock:
+                invocation[0] += 1
+                position = invocation[0]
+            if position == 1:
+                first_entered.set()
+                if not release_first.wait(5):
+                    raise AssertionError("timed out waiting to release first parse")
+            else:
+                second_entered.set()
+            return original_parse(parser)
+
+        def compile_in_thread(started=None):
+            if started is not None:
+                started.set()
+            try:
+                compile_source(VALID)
+            except BaseException as error:
+                errors.append(error)
+
+        with mock.patch.object(parser_module.Parser, "parse", controlled_parse):
+            first = threading.Thread(target=compile_in_thread)
+            second = threading.Thread(target=compile_in_thread, args=(second_started,))
+            first.start()
+            self.assertTrue(first_entered.wait(5), "first parse never entered")
+            second.start()
+            self.assertTrue(second_started.wait(5), "second compiler call never started")
+            self.assertFalse(second_entered.wait(1), "overlapping parse entered while the first held the reservation")
+            release_first.set()
+            first.join(5)
+            second.join(5)
+
+        self.assertFalse(first.is_alive() or second.is_alive(), "compiler thread did not finish")
+        self.assertEqual(errors, [])
+        self.assertTrue(second_entered.is_set(), "second parse never ran after the first completed")
+
+    def test_recursion_limit_lock_is_reentrant(self):
+        # A future nested same-thread parse must not deadlock. This also catches
+        # an accidental downgrade from RLock to Lock without needing to hang.
+        lock = parser_module._RECURSION_LIMIT_LOCK
+        self.assertTrue(lock.acquire(timeout=1))
+        nested = False
+        try:
+            nested = lock.acquire(blocking=False)
+            self.assertTrue(nested, "parser recursion-limit lock must be reentrant")
+        finally:
+            if nested:
+                lock.release()
+            lock.release()
 
     def test_excessive_parentheses_are_a_diagnostic_not_a_crash(self):
         depth = 5000

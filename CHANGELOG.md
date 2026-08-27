@@ -13,6 +13,7 @@
 - `parse` now reserves the Python stack its documented depth bound requires, so a deeply nested expression yields `E0101` rather than a `RecursionError` when the compiler is embedded in a caller with its own deep stack. 0.3's added precedence tier had halved the previous margin.
 - Added a test that measures the real per-level frame cost, so a future precedence tier cannot silently erode the guard.
 - Added boundary tests at exactly the documented depth limit, which was previously untested from either side.
+- Serialized the interpreter-global recursion-limit reservation and added tests for concurrent parse exclusion, same-thread reentrancy, and restoration after diagnostics.
 - `E0210` now distinguishes a local that shadows a parameter from a redeclared local, instead of reporting both as "already declared".
 
 ## 0.2.0 - 2026-08-26
