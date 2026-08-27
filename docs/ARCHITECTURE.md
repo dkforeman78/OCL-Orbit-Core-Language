@@ -22,6 +22,15 @@ entirely valid program become a `RecursionError` instead of a binary. Recursive
 descent in the parser is inherently recursive, so it caps nesting explicitly and
 reports `E0101` rather than relying on the interpreter's stack limit.
 
+That cap is a parser-level count, but it is enforced by Python frames, so `parse`
+reserves the stack the bound actually needs before parsing and restores the
+previous limit afterwards. Without that, a caller who is already deep — an
+embedding tool, a language server, a future self-hosted driver — would exhaust
+the stack before the guard could fire, turning a documented diagnostic back into
+a `RecursionError`. `FRAMES_PER_LEVEL` records the per-level cost of the
+`_expression` -> `_term` -> `_primary` chain; a test measures the real slope and
+fails if a new precedence tier makes it stale.
+
 Every name codegen invents lives in a reserved namespace — either containing `.`,
 such as the `ocl.entry` block label, or purely numeric, such as SSA temporaries.
 The OCL lexer can produce neither, so a source identifier can never capture a
@@ -48,5 +57,5 @@ approach — the CRT-free entry point must be redesigned before any of these app
 
 0.3 adds immutable SSA locals and arithmetic while staying inside that envelope:
 frames are tens of bytes and the linked binary imports nothing. Verified on the
-x86-64 host — `main` in `examples/add.ocl` allocates `0x28` bytes and calls no
-imported symbol.
+x86-64 host — `main` in `examples/local.ocl`, the 0.3 acceptance program,
+allocates `0x28` bytes and calls no imported symbol.

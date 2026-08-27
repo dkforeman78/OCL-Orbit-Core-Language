@@ -8,6 +8,13 @@
 - Extended provisional wrapping `i32` arithmetic semantics and expression-depth protection to the new expression forms.
 - Added the `local.ocl` native acceptance program and expanded parser, semantic, IR, stress, evaluation-order, and native tests.
 
+### Fixed after independent review
+
+- `parse` now reserves the Python stack its documented depth bound requires, so a deeply nested expression yields `E0101` rather than a `RecursionError` when the compiler is embedded in a caller with its own deep stack. 0.3's added precedence tier had halved the previous margin.
+- Added a test that measures the real per-level frame cost, so a future precedence tier cannot silently erode the guard.
+- Added boundary tests at exactly the documented depth limit, which was previously untested from either side.
+- `E0210` now distinguishes a local that shadows a parameter from a redeclared local, instead of reporting both as "already declared".
+
 ## 0.2.0 - 2026-08-26
 
 - Added typed `i32` function parameters and parameter references.

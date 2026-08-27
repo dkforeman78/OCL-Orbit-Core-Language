@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 from .nodes import (
     I32_MAX,
     BinaryExpression,
@@ -23,6 +25,18 @@ _MAX_I32_DIGITS = len(str(I32_MAX))
 # the interpreter's stack happens to allow. Real source never approaches this;
 # machine-generated source can, and must get a diagnostic instead of a crash.
 MAX_EXPRESSION_DEPTH = 256
+
+# Python frames consumed per level of expression nesting: _expression -> _term
+# -> _primary, which then re-enters _expression. MAX_EXPRESSION_DEPTH is a
+# language bound, but the promise attached to it — a diagnostic, never a
+# RecursionError — only holds if the interpreter can actually reach that depth
+# from wherever the caller happens to be. Adding a precedence tier raises this
+# number; `test_frames_per_nesting_level_matches_the_parser` fails if it is
+# stale, so the guard cannot silently stop working.
+FRAMES_PER_LEVEL = 3
+
+# Slack for the driver, the CLI and the tail of _primary beyond the recursive call.
+_STACK_MARGIN = 96
 
 
 class Parser:
@@ -161,5 +175,29 @@ class Parser:
         return True
 
 
+def _stack_depth() -> int:
+    depth = 0
+    frame: object = sys._getframe()
+    while frame is not None:
+        depth += 1
+        frame = frame.f_back
+    return depth
+
+
 def parse(tokens: list[Token], source: str) -> Program:
-    return Parser(tokens, source).parse()
+    """Parse a token stream, guaranteeing E0101 rather than a RecursionError.
+
+    The depth guard is expressed in parser levels, but it is enforced by Python
+    frames. A caller that is already deep — an embedding tool, a language server,
+    a future self-hosted driver — would otherwise exhaust the stack before the
+    guard could fire. Reserving the frames the bound actually needs keeps the
+    documented limit deterministic instead of dependent on the call site.
+    """
+    required = MAX_EXPRESSION_DEPTH * FRAMES_PER_LEVEL + _STACK_MARGIN
+    previous_limit = sys.getrecursionlimit()
+    if previous_limit - _stack_depth() < required:
+        sys.setrecursionlimit(_stack_depth() + required)
+    try:
+        return Parser(tokens, source).parse()
+    finally:
+        sys.setrecursionlimit(previous_limit)

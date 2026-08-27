@@ -30,11 +30,17 @@ def analyze(program: Program, source: str) -> None:
         returns = [statement for statement in function.body if isinstance(statement, ReturnStatement)]
         if len(returns) != 1 or not function.body or function.body[-1] is not returns[0]:
             raise DiagnosticError("E0202", "function body must end with exactly one return statement", source, function.location)
-        scope = {parameter.name for parameter in function.parameters}
+        parameter_names = {parameter.name for parameter in function.parameters}
+        scope = set(parameter_names)
         for statement in function.body:
             if isinstance(statement, LetStatement):
                 if statement.type_name != "i32":
                     raise DiagnosticError("E0200", f"unknown type '{statement.type_name}'; OCL 0.3 supports only i32", source, statement.location)
+                # Shadowing a parameter and redeclaring a local are separate
+                # rules, so they get separate messages: "already declared" would
+                # send the reader hunting for a `let` that does not exist.
+                if statement.name in parameter_names:
+                    raise DiagnosticError("E0210", f"local '{statement.name}' conflicts with parameter '{statement.name}'; OCL 0.3 has no shadowing", source, statement.location)
                 if statement.name in scope:
                     raise DiagnosticError("E0210", f"local name '{statement.name}' is already declared in this function", source, statement.location)
                 _analyze_expression(statement.initializer, scope, functions, source)

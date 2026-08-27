@@ -45,7 +45,9 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
   (`E0101`), never a compiler failure. Binary-operator chains are folded
   iteratively and cost no nesting depth, so the limit is reached through nested
   calls or parenthesized expressions. The
-  limit is an implementation bound, not a language constant, and may rise.
+  limit is an implementation bound, not a language constant, and may rise. The
+  bound is enforced independently of how deep the calling program's own stack is,
+  so the same source always produces the same result.
 - `main` is emitted using LLVM's default host calling convention. On Windows it is
   linked directly as the CRT-free executable entry point. No broader OCL ABI or
   runtime contract is stabilized.

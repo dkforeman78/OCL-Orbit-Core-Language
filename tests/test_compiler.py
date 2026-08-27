@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
-from compiler import cli
+from compiler import cli, parser as parser_module
 from compiler.codegen import _escape_llvm_string, generate_llvm_ir
 from compiler.diagnostics import DiagnosticError, InternalCompilerError, SourceLocation
 from compiler.driver import compile_source
@@ -281,8 +281,17 @@ class Ocl03Tests(DiagnosticAssertions):
         self.assertDiagnostic(source, "E0210", "already declared")
 
     def test_local_cannot_shadow_parameter(self):
+        # Distinct rule from a duplicate local, so the message names the
+        # parameter: "already declared" would send the reader hunting for a
+        # `let` that does not exist.
         source = "fn f(value: i32) -> i32 { let value: i32 = 1; return value; } fn main() -> i32 { return f(42); }"
-        self.assertDiagnostic(source, "E0210", "already declared")
+        error = self.assertDiagnostic(source, "E0210", "conflicts with parameter")
+        self.assertIn("'value'", error.message)
+
+    def test_duplicate_local_message_says_local(self):
+        source = "fn main() -> i32 { let a: i32 = 1; let a: i32 = 2; return a; }"
+        error = self.assertDiagnostic(source, "E0210", "already declared")
+        self.assertNotIn("parameter", error.message)
 
     def test_local_type_must_be_i32(self):
         self.assertDiagnostic("fn main() -> i32 { let value: i64 = 42; return value; }", "E0200", "unknown type 'i64'")
@@ -558,6 +567,80 @@ class ExpressionDepthTests(DiagnosticAssertions):
         source = "fn main() -> i32 { return " + "(" * depth + "42" + ")" * depth + "; }"
         _, ir = compile_source(source)
         self.assertIn("ret i32 42", ir)
+
+    def test_the_documented_depth_limit_is_exactly_the_boundary(self):
+        # The limit is a published number, so both sides of it are asserted.
+        limit = parser_module.MAX_EXPRESSION_DEPTH
+        at_limit = "fn main() -> i32 { return " + "(" * (limit - 1) + "42" + ")" * (limit - 1) + "; }"
+        _, ir = compile_source(at_limit)
+        self.assertIn("ret i32 42", ir)
+        past_limit = "fn main() -> i32 { return " + "(" * limit + "42" + ")" * limit + "; }"
+        self.assertDiagnostic(past_limit, "E0101", "nested too deeply")
+
+    def test_max_depth_expression_survives_a_deep_caller_stack(self):
+        # The guard promises a diagnostic rather than a RecursionError. That
+        # promise depends on Python frames still being available, so it must hold
+        # when the compiler is embedded rather than only at the CLI's shallow
+        # baseline stack.
+        limit = parser_module.MAX_EXPRESSION_DEPTH
+        source = "fn main() -> i32 { return " + "(" * (limit - 1) + "42" + ")" * (limit - 1) + "; }"
+
+        def deepen(remaining, action):
+            if remaining == 0:
+                return action()
+            return deepen(remaining - 1, action)
+
+        for caller_depth in (0, 200, 400):
+            with self.subTest(caller_depth=caller_depth):
+                _, ir = deepen(caller_depth, lambda: compile_source(source))
+                self.assertIn("ret i32 42", ir)
+
+    def test_frames_per_nesting_level_matches_the_parser(self):
+        # FRAMES_PER_LEVEL is what reserves enough stack for the documented
+        # depth bound. Adding a precedence tier changes it, and a stale value
+        # would quietly shrink the guard's margin until it stopped working.
+        def peak_frames(depth):
+            source = "fn main() -> i32 { return " + "(" * depth + "42" + ")" * depth + "; }"
+            peak = [0]
+
+            def probe(frame, event, arg):
+                if event == "call":
+                    current, walker = 0, frame
+                    while walker is not None:
+                        current += 1
+                        walker = walker.f_back
+                    peak[0] = max(peak[0], current)
+                return None
+
+            sys.setprofile(probe)
+            try:
+                compile_source(source)
+            finally:
+                sys.setprofile(None)
+            return peak[0]
+
+        # The slope between two depths, so the fixed cost of the driver and the
+        # enclosing function does not distort the per-level figure.
+        near, far = 40, 80
+        slope = (peak_frames(far) - peak_frames(near)) / (far - near)
+        self.assertLessEqual(
+            slope, parser_module.FRAMES_PER_LEVEL,
+            f"parsing costs {slope:.2f} frames per nesting level but "
+            f"FRAMES_PER_LEVEL is {parser_module.FRAMES_PER_LEVEL}; raise it so "
+            "the depth guard keeps reserving enough stack",
+        )
+
+    def test_excessive_nesting_diagnoses_from_a_deep_caller_stack(self):
+        source = "fn main() -> i32 { return " + "(" * 5000 + "42" + ")" * 5000 + "; }"
+
+        def deepen(remaining, action):
+            if remaining == 0:
+                return action()
+            return deepen(remaining - 1, action)
+
+        with self.assertRaises(DiagnosticError) as caught:
+            deepen(400, lambda: compile_source(source))
+        self.assertEqual(caught.exception.code, "E0101")
 
     def test_excessive_parentheses_are_a_diagnostic_not_a_crash(self):
         depth = 5000
