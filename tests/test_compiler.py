@@ -390,11 +390,35 @@ class Ocl04Tests(DiagnosticAssertions):
             "%2 = icmp eq i1 %1, 1",
         ])
 
-    def test_nested_if_uses_nested_merge_as_phi_predecessor(self):
-        source = "fn main() -> i32 { return if true { if false { 0 } else { 42 } } else { 1 }; }"
+    def _phi_lines(self, source: str) -> list[str]:
         _, ir = compile_source(source)
-        self.assertIn("[", ir)
-        self.assertIn("%ocl.if.merge.1]", ir)
+        return [line.strip() for line in ir.splitlines() if "= phi " in line]
+
+    def test_nested_if_in_then_uses_nested_merge_as_phi_predecessor(self):
+        # A branch that itself contains control flow no longer reaches the merge
+        # from the branch's own label, so the phi must name the nested merge.
+        phis = self._phi_lines("fn main() -> i32 { return if true { if false { 0 } else { 42 } } else { 1 }; }")
+        self.assertEqual(phis, [
+            "%0 = phi i32 [0, %ocl.if.then.1], [42, %ocl.if.else.1]",
+            "%1 = phi i32 [%0, %ocl.if.merge.1], [1, %ocl.if.else.0]",
+        ])
+
+    def test_nested_if_in_else_uses_nested_merge_as_phi_predecessor(self):
+        # The mirror of the case above. Naming the else *label* rather than the
+        # block the value was produced in yields IR that LLVM rejects with
+        # "PHI node entries do not match predecessors!".
+        phis = self._phi_lines("fn main() -> i32 { return if false { 1 } else { if true { 42 } else { 0 } }; }")
+        self.assertEqual(phis, [
+            "%0 = phi i32 [42, %ocl.if.then.1], [0, %ocl.if.else.1]",
+            "%1 = phi i32 [1, %ocl.if.then.0], [%0, %ocl.if.merge.1]",
+        ])
+
+    def test_nested_if_in_both_branches_names_both_nested_merges(self):
+        source = ("fn f(a: bool, b: bool, c: bool) -> i32 { "
+                  "return if a { if b { 1 } else { 2 } } else { if c { 3 } else { 4 } }; } "
+                  "fn main() -> i32 { return f(true, true, true); }")
+        phis = self._phi_lines(source)
+        self.assertEqual(phis[-1], "%2 = phi i32 [%0, %ocl.if.merge.1], [%1, %ocl.if.merge.2]")
 
     def test_bool_arithmetic_is_rejected(self):
         self.assertDiagnostic("fn main() -> i32 { return true + false; }", "E0211", "requires i32 operands")
@@ -461,6 +485,35 @@ class Ocl04Tests(DiagnosticAssertions):
         labels = [line for line in ir.splitlines() if line.startswith("ocl.if.") and line.endswith(":")]
         self.assertEqual(len(labels), 6)
         self.assertEqual(len(set(labels)), 6)
+
+    def test_nested_if_branches_select_the_right_value_natively(self):
+        # IR shape assertions cannot tell a correct phi from a valid but
+        # semantically wrong one, so the whole truth table is executed.
+        require_clang()
+        source = (
+            "fn pick(a: bool, b: bool, c: bool) -> i32 { "
+            "return if a { if b { 11 } else { 22 } } else { if c { 33 } else { 44 } }; } "
+            "fn main() -> i32 { return pick(A, B, C); }"
+        )
+        expected = {
+            ("true", "true", "true"): 11, ("true", "true", "false"): 11,
+            ("true", "false", "true"): 22, ("true", "false", "false"): 22,
+            ("false", "true", "true"): 33, ("false", "true", "false"): 44,
+            ("false", "false", "true"): 33, ("false", "false", "false"): 44,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for (a, b, c), want in expected.items():
+                with self.subTest(a=a, b=b, c=c):
+                    program = source.replace("A", a).replace("B", b).replace("C", c)
+                    path = Path(directory) / "pick.ocl"
+                    path.write_text(program, encoding="utf-8")
+                    executable = Path(directory) / ("pick.exe" if os.name == "nt" else "pick")
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(subprocess.run([str(executable)]).returncode, want)
 
     def test_native_decision_returns_42(self):
         require_clang()
