@@ -13,11 +13,11 @@ OCL Compiler Prototype 0.2 extends the proven bootstrap path with typed function
   back to another compiler. Run `python tools/check_clang_version.py` to confirm
   the toolchain oclc will use.
 - A platform linker supported by Clang. The LLVM Windows installer includes
-  `lld-link`, which is sufficient for Prototype 0.1.
+  `lld-link`, which is sufficient for Prototype 0.2.
 
 The prototype is tested in CI on Windows, Linux, and macOS with Python 3.11 and
 3.12. Windows x86-64 is the primary development host. Cross-compilation and
-ARM64 validation are roadmap work, not 0.1 claims.
+ARM64 validation are roadmap work, not 0.2 claims.
 
 ## Use
 
