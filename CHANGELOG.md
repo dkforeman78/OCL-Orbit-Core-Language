@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 - Unreleased
+
+- Added the `bool` type and `true`/`false` literals for parameters, locals, function results, and expressions.
+- Added typed equality and signed integer comparison operators with conventional precedence.
+- Added expression-oriented `if condition { expression } else { expression }` with mandatory, type-matched branches.
+- Upgraded semantic analysis to type-check expressions, local initializers, calls, and function returns without recursive AST walks.
+- Added LLVM `i1`, conditional-branch, generated-block, and `phi` lowering without changing the provisional ABI or runtime envelope.
+- Extended parser stack-reservation measurement to nested `if` expressions and added the `decisions.ocl` native acceptance program.
+
 ## 0.3.0 - 2026-08-27
 
 - Added immutable typed local bindings with declaration-order visibility and no shadowing.

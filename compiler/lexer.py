@@ -8,8 +8,12 @@ from .diagnostics import DiagnosticError, SourceLocation
 
 class TokenKind(Enum):
     FN = auto()
+    IF = auto()
+    ELSE = auto()
     LET = auto()
     RETURN = auto()
+    TRUE = auto()
+    FALSE = auto()
     IDENTIFIER = auto()
     INTEGER = auto()
     LEFT_PAREN = auto()
@@ -23,6 +27,12 @@ class TokenKind(Enum):
     MINUS = auto()
     STAR = auto()
     EQUAL = auto()
+    EQUAL_EQUAL = auto()
+    BANG_EQUAL = auto()
+    LESS = auto()
+    LESS_EQUAL = auto()
+    GREATER = auto()
+    GREATER_EQUAL = auto()
     SEMICOLON = auto()
     EOF = auto()
 
@@ -56,8 +66,16 @@ def lex(source: str) -> list[Token]:
             continue
 
         start = location()
-        if source.startswith("->", index):
-            tokens.append(Token(TokenKind.ARROW, "->", start))
+        compound = {
+            "->": TokenKind.ARROW,
+            "==": TokenKind.EQUAL_EQUAL,
+            "!=": TokenKind.BANG_EQUAL,
+            "<=": TokenKind.LESS_EQUAL,
+            ">=": TokenKind.GREATER_EQUAL,
+        }
+        pair = source[index:index + 2]
+        if pair in compound:
+            tokens.append(Token(compound[pair], pair, start))
             index += 2
             column += 2
             continue
@@ -72,6 +90,8 @@ def lex(source: str) -> list[Token]:
             "-": TokenKind.MINUS,
             "*": TokenKind.STAR,
             "=": TokenKind.EQUAL,
+            "<": TokenKind.LESS,
+            ">": TokenKind.GREATER,
             ";": TokenKind.SEMICOLON,
         }
         if char in single:
@@ -84,7 +104,15 @@ def lex(source: str) -> list[Token]:
             while end < len(source) and source[end].isascii() and (source[end].isalnum() or source[end] == "_"):
                 end += 1
             word = source[index:end]
-            kind = {"fn": TokenKind.FN, "let": TokenKind.LET, "return": TokenKind.RETURN}.get(word, TokenKind.IDENTIFIER)
+            kind = {
+                "else": TokenKind.ELSE,
+                "false": TokenKind.FALSE,
+                "fn": TokenKind.FN,
+                "if": TokenKind.IF,
+                "let": TokenKind.LET,
+                "return": TokenKind.RETURN,
+                "true": TokenKind.TRUE,
+            }.get(word, TokenKind.IDENTIFIER)
             tokens.append(Token(kind, word, start))
             column += end - index
             index = end

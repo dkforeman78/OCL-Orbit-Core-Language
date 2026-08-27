@@ -8,12 +8,19 @@
 4. `codegen` lowers the validated AST to textual LLVM IR.
 5. `cli` invokes Clang for LLVM compilation and host-native linking.
 
-Direct AST-to-LLVM lowering is limited to the bootstrap. The 0.3 semantic pass first collects function signatures, then validates bodies in source order, allowing forward calls while making local-binding visibility deterministic. An Orbit IR layer can be inserted later without changing the lexer, parser, or command surface. Diagnostics carry stable-looking codes for tooling, but codes are provisional during 0.x.
+Direct AST-to-LLVM lowering is limited to the bootstrap. The 0.4 semantic pass first collects typed function signatures, then validates bodies in source order, allowing forward calls while making local-binding visibility deterministic. Its iterative post-order expression walk acts as the prototype type checker for `i32` and `bool`. An Orbit IR layer can be inserted later without changing the lexer, parser, or command surface. Diagnostics carry stable-looking codes for tooling, but codes are provisional during 0.x.
 
-Prototype 0.3 locals are immutable and lower directly to LLVM SSA operands. A
+Prototype 0.4 locals are immutable and lower directly to LLVM SSA operands. A
 local whose initializer is a constant or parameter is an alias in the compiler's
 value environment; a computed initializer names the resulting SSA temporary.
 No `alloca`, load, store, mutable storage, lifetime, or ABI behavior is introduced.
+
+Boolean values lower to LLVM `i1`. An `if` expression creates deterministic,
+compiler-reserved then/else/merge block labels, emits a conditional branch, and
+joins the selected value with a typed `phi`. The iterative lowering state machine
+records the actual predecessor block for each branch, so a nested `if` remains a
+valid control-flow graph without recursive AST traversal. This is the first CFG
+in the bootstrap backend, but it does not stabilize an intermediate IR or ABI.
 
 Semantic analysis and expression lowering both walk expressions with an explicit
 stack rather than by recursion, and emit deterministic LLVM SSA temporaries.
@@ -28,7 +35,8 @@ previous limit afterwards. Without that, a caller who is already deep — an
 embedding tool, a language server, a future self-hosted driver — would exhaust
 the stack before the guard could fire, turning a documented diagnostic back into
 a `RecursionError`. `FRAMES_PER_LEVEL` records the per-level cost of the
-`_expression` -> `_term` -> `_primary` chain; a test measures the real slope and
+precedence and primary-expression chain; a test measures the real slope for both
+parentheses and nested `if` expressions and
 fails if a new precedence tier makes it stale. Because Python's recursion limit
 is interpreter-global, parse calls are serialized while the temporary limit is
 active so concurrent compiler invocations cannot restore limits out of order.
@@ -57,7 +65,7 @@ approach — the CRT-free entry point must be redesigned before any of these app
 - any call into the C runtime, libc, or an imported system library;
 - any need for `argc`/`argv`, or an exit path other than returning from `main`.
 
-0.3 adds immutable SSA locals and arithmetic while staying inside that envelope:
+0.4 adds `i1` values and intra-function conditional control flow while staying inside that envelope:
 frames are tens of bytes and the linked binary imports nothing. Verified on the
-x86-64 host — `main` in `examples/local.ocl`, the 0.3 acceptance program,
+x86-64 host — `main` in `examples/decisions.ocl`, the 0.4 acceptance program,
 allocates `0x28` bytes and calls no imported symbol.

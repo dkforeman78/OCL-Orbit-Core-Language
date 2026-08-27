@@ -29,7 +29,7 @@ jobs:
 
       # Clang-dependent tests skip themselves when Clang is missing. CI must
       # prove the toolchain is present and new enough, or the one criterion
-      # Prototype 0.1 exists to demonstrate can disappear from a green run.
+      # Prototype acceptance checks must not disappear from a green run.
       # This checks the same binary oclc resolves, not merely whatever is on PATH.
       - name: Verify the toolchain
         run: python tools/check_clang_version.py
@@ -39,15 +39,16 @@ jobs:
           OCL_REQUIRE_CLANG: "1"
         run: python -m unittest discover -s tests -v
 
-      # Preserve earlier contracts and prove the 0.3 local-computation milestone.
+      # Preserve earlier contracts and prove the 0.4 decisions milestone.
       - name: Acceptance tests
         shell: bash
         run: |
           python oclc.py build examples/hello.ocl
           python oclc.py build examples/add.ocl
           python oclc.py build examples/local.ocl
+          python oclc.py build examples/decisions.ocl
           if [ "$RUNNER_OS" = "Windows" ]; then suffix=.exe; else suffix=; fi
-          for program in hello add local; do
+          for program in hello add local decisions; do
             exe="examples/${program}${suffix}"
             set +e
             "./$exe"
