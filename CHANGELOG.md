@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0 - 2026-08-27
+
+- Added the `bool` type and `true`/`false` literals for parameters, locals, function results, and expressions.
+- Added typed equality and signed integer comparison operators with conventional precedence.
+- Added expression-oriented `if condition { expression } else { expression }` with mandatory, type-matched branches.
+- Upgraded semantic analysis to type-check expressions, local initializers, calls, and function returns without recursive AST walks.
+- Added LLVM `i1`, conditional-branch, generated-block, and `phi` lowering without changing the provisional ABI or runtime envelope.
+- Extended parser stack-reservation measurement to nested `if` expressions and added the `decisions.ocl` native acceptance program.
+
+### Fixed after independent review
+
+- Covered the nested-`if` phi-predecessor invariant in the `else` branch, not only the `then` branch. Naming the else label instead of the block the value was produced in emits IR that LLVM rejects, and the suite was previously green under that defect.
+- Replaced the weak predecessor assertion, which included a vacuous `assertIn("[", ir)`, with exact phi-line comparisons for then-nesting, else-nesting, and both.
+- Added a native truth table over nested `if` expressions, since IR shape alone cannot distinguish a correct phi from a valid but semantically wrong one.
+
 ## 0.3.0 - 2026-08-27
 
 - Added immutable typed local bindings with declaration-order visibility and no shadowing.

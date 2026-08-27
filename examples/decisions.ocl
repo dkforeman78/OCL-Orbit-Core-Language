@@ -1,0 +1,14 @@
+fn choose(value: i32, limit: i32) -> i32 {
+    let within_limit: bool = value <= limit;
+    return if within_limit {
+        value * 2
+    } else {
+        limit
+    };
+}
+
+fn main() -> i32 {
+    let below: i32 = choose(21, 42);
+    let above: i32 = choose(84, 42);
+    return below + above - 42;
+}

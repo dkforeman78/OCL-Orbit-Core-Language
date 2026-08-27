@@ -1,6 +1,6 @@
-# OCL Language Specification — Prototype 0.3
+# OCL Language Specification — Prototype 0.4
 
-This document describes only the implemented 0.3 subset. It is not a stability promise for later OCL releases.
+This document describes only the implemented 0.4 subset. It is not a stability promise for later OCL releases.
 
 ## Grammar
 
@@ -9,31 +9,41 @@ program          = { function } , EOF ;
 function         = "fn" , identifier , "(" , [ parameters ] , ")" , "->" , type , body ;
 parameters       = parameter , { "," , parameter } ;
 parameter        = identifier , ":" , type ;
-type             = "i32" ;
+type             = "i32" | "bool" ;
 body             = "{" , { let-statement } , return-statement , "}" ;
 let-statement    = "let" , identifier , ":" , type , "=" , expression , ";" ;
 return-statement = "return" , expression , ";" ;
-expression       = term , { ( "+" | "-" ) , term } ;
+expression       = equality ;
+equality         = comparison , { ( "==" | "!=" ) , comparison } ;
+comparison       = sum , { ( "<" | "<=" | ">" | ">=" ) , sum } ;
+sum              = term , { ( "+" | "-" ) , term } ;
 term             = primary , { "*" , primary } ;
-primary          = integer-literal | call | identifier | "(" , expression , ")" ;
+primary          = integer-literal | boolean-literal | call | identifier
+                 | "(" , expression , ")" | if-expression ;
+boolean-literal  = "true" | "false" ;
+if-expression    = "if" , expression , "{" , expression , "}"
+                 , "else" , "{" , expression , "}" ;
 call             = identifier , "(" , [ arguments ] , ")" ;
 arguments        = expression , { "," , expression } ;
 ```
 
-Identifiers contain ASCII letters, digits, and underscores and cannot begin with a digit. `fn`, `let`, and `return` are reserved keywords. Whitespace is insignificant. Multiplication has higher precedence than addition and subtraction. Operators at the same precedence are left-associative. Parentheses override precedence. Comments and negative literals are not part of 0.3; `-` is binary subtraction only.
+Identifiers contain ASCII letters, digits, and underscores and cannot begin with a digit. `else`, `false`, `fn`, `if`, `let`, `return`, and `true` are reserved keywords. Whitespace is insignificant. Precedence from highest to lowest is primary expressions, multiplication, addition/subtraction, relational comparison, then equality. Operators at the same precedence are left-associative. Parentheses override precedence. Comments and negative literals are not part of 0.4; `-` is binary subtraction only.
 
 ## Semantics
 
 - A program must define `main`.
-- Every function contains zero or more immutable local bindings followed by exactly one `return` statement. A local is introduced by `let name: i32 = expression;` and cannot be reassigned.
-- Parameters and arguments are `i32`; parameter names must be unique within a function.
+- Every function contains zero or more immutable local bindings followed by exactly one `return` statement. A local is introduced by `let name: type = expression;` and cannot be reassigned.
+- Parameters, locals, arguments, and function results may be `i32` or `bool`; parameter names must be unique within a function.
 - Identifier expressions resolve to parameters or earlier local bindings. An initializer is analyzed before its local name enters scope, so self-reference and references to later locals are rejected.
-- Local names must be unique within a function and cannot shadow parameters. OCL 0.3 has one function-wide local scope and no shadowing.
+- Local names must be unique within a function and cannot shadow parameters. OCL 0.4 has one function-wide local scope and no shadowing.
 - Function calls may refer to functions declared later in the file.
 - Calls must resolve to a declared function and supply exactly its declared number of arguments.
 - `main` must have no parameters.
+- `main` must return `i32`; there is no implicit conversion between `i32` and `bool`.
 - Duplicate function names are rejected.
-- **Prototype 0.3 `i32` arithmetic wraps.** Addition, subtraction, and
+- Arithmetic operators require `i32` operands. Relational operators `<`, `<=`, `>`, and `>=` require `i32` operands and produce `bool`. Equality operators `==` and `!=` require matching operand types and produce `bool`.
+- `if` is an expression. Its condition must be `bool`, both branches must have the same type, and only the selected branch executes. `else` is mandatory.
+- **Prototype 0.4 `i32` arithmetic wraps.** Addition, subtraction, and
   multiplication are evaluated modulo 2^32 in two's-complement representation,
   so `2147483647 + 1` is defined and equals
   `-2147483648`. The prototype never inherits C's undefined signed overflow.
@@ -44,7 +54,7 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
 - Expressions may nest at most 256 levels deep; exceeding that is a diagnostic
   (`E0101`), never a compiler failure. Binary-operator chains are folded
   iteratively and cost no nesting depth, so the limit is reached through nested
-  calls or parenthesized expressions. The
+  calls, parenthesized expressions, or nested `if` expressions. The
   limit is an implementation bound, not a language constant, and may rise. The
   bound is enforced independently of how deep the calling program's own stack is,
   so the same source always produces the same result.
@@ -66,4 +76,4 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
 
 ## Safety and compatibility status
 
-Prototype 0.3 has no pointers, allocation, ownership, references, mutation, or concurrency, so it makes no permanent memory-model decision. Integer literals are range checked, and arithmetic uses the provisional, defined wrapping behavior described above. The final overflow policy, broader variable model, textual syntax, OCL ABI, and executable format remain provisional.
+Prototype 0.4 has no pointers, allocation, ownership, references, mutation, loops, or concurrency, so it makes no permanent memory-model decision. Integer literals are range checked, and arithmetic uses the provisional, defined wrapping behavior described above. The final overflow policy, broader variable/control-flow model, textual syntax, OCL ABI, and executable format remain provisional.

@@ -14,7 +14,7 @@ from compiler import cli, parser as parser_module
 from compiler.codegen import _escape_llvm_string, generate_llvm_ir
 from compiler.diagnostics import DiagnosticError, InternalCompilerError, SourceLocation
 from compiler.driver import compile_source
-from compiler.nodes import BinaryExpression, CallExpression, Function, IdentifierExpression, IntegerLiteral, LetStatement, Program, ReturnStatement
+from compiler.nodes import BinaryExpression, BooleanLiteral, CallExpression, Function, IdentifierExpression, IfExpression, IntegerLiteral, LetStatement, Program, ReturnStatement
 from compiler.semantic import analyze
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "tools"))
@@ -326,6 +326,207 @@ class Ocl03Tests(DiagnosticAssertions):
             self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
 
 
+class Ocl04Tests(DiagnosticAssertions):
+    SOURCE = (
+        "fn choose(value: i32, limit: i32) -> i32 {\n"
+        "    let within_limit: bool = value <= limit;\n"
+        "    return if within_limit { value * 2 } else { limit };\n"
+        "}\n\n"
+        "fn main() -> i32 {\n"
+        "    let below: i32 = choose(21, 42);\n"
+        "    let above: i32 = choose(84, 42);\n"
+        "    return below + above - 42;\n"
+        "}\n"
+    )
+
+    def test_decisions_ast(self):
+        program, _ = compile_source(self.SOURCE)
+        choose = program.functions[0]
+        self.assertEqual(choose.body[0].type_name, "bool")
+        self.assertIsInstance(choose.body[0].initializer, BinaryExpression)
+        decision = choose.body[-1].expression
+        self.assertIsInstance(decision, IfExpression)
+        self.assertIsInstance(decision.condition, IdentifierExpression)
+
+    def test_boolean_literals_ast(self):
+        program, _ = compile_source("fn main() -> i32 { return if true { 42 } else { 0 }; }")
+        condition = program.functions[0].body[-1].expression.condition
+        self.assertIsInstance(condition, BooleanLiteral)
+        self.assertTrue(condition.value)
+
+    def test_decisions_llvm_ir(self):
+        _, ir = compile_source(self.SOURCE, "decisions.ocl")
+        self.assertIn("%0 = icmp sle i32 %value, %limit", ir)
+        self.assertIn("br i1 %0, label %ocl.if.then.0, label %ocl.if.else.0", ir)
+        self.assertIn("ocl.if.then.0:", ir)
+        self.assertIn("ocl.if.else.0:", ir)
+        self.assertIn("ocl.if.merge.0:", ir)
+        self.assertIn("phi i32", ir)
+
+    def test_every_comparison_operator_lowers(self):
+        predicates = {"<": "slt", "<=": "sle", ">": "sgt", ">=": "sge", "==": "eq", "!=": "ne"}
+        for operator, predicate in predicates.items():
+            with self.subTest(operator=operator):
+                source = f"fn main() -> i32 {{ return if 1 {operator} 2 {{ 42 }} else {{ 0 }}; }}"
+                _, ir = compile_source(source)
+                self.assertIn(f"icmp {predicate} i32 1, 2", ir)
+
+    def test_bool_function_parameter_and_return_lower_as_i1(self):
+        source = "fn identity(value: bool) -> bool { return value; } fn main() -> i32 { return if identity(true) { 42 } else { 0 }; }"
+        _, ir = compile_source(source)
+        self.assertIn("define i1 @identity(i1 %value)", ir)
+        self.assertIn("call i1 @identity(i1 1)", ir)
+
+    def test_bool_equality_is_supported(self):
+        _, ir = compile_source("fn main() -> i32 { return if true != false { 42 } else { 0 }; }")
+        self.assertIn("icmp ne i1 1, 0", ir)
+
+    def test_precedence_is_arithmetic_then_relational_then_equality(self):
+        _, ir = compile_source("fn main() -> i32 { return if 1 + 2 < 4 == true { 42 } else { 0 }; }")
+        operations = [line.strip() for line in ir.splitlines() if line.strip().startswith("%")]
+        self.assertEqual(operations[:3], [
+            "%0 = add i32 1, 2",
+            "%1 = icmp slt i32 %0, 4",
+            "%2 = icmp eq i1 %1, 1",
+        ])
+
+    def _phi_lines(self, source: str) -> list[str]:
+        _, ir = compile_source(source)
+        return [line.strip() for line in ir.splitlines() if "= phi " in line]
+
+    def test_nested_if_in_then_uses_nested_merge_as_phi_predecessor(self):
+        # A branch that itself contains control flow no longer reaches the merge
+        # from the branch's own label, so the phi must name the nested merge.
+        phis = self._phi_lines("fn main() -> i32 { return if true { if false { 0 } else { 42 } } else { 1 }; }")
+        self.assertEqual(phis, [
+            "%0 = phi i32 [0, %ocl.if.then.1], [42, %ocl.if.else.1]",
+            "%1 = phi i32 [%0, %ocl.if.merge.1], [1, %ocl.if.else.0]",
+        ])
+
+    def test_nested_if_in_else_uses_nested_merge_as_phi_predecessor(self):
+        # The mirror of the case above. Naming the else *label* rather than the
+        # block the value was produced in yields IR that LLVM rejects with
+        # "PHI node entries do not match predecessors!".
+        phis = self._phi_lines("fn main() -> i32 { return if false { 1 } else { if true { 42 } else { 0 } }; }")
+        self.assertEqual(phis, [
+            "%0 = phi i32 [42, %ocl.if.then.1], [0, %ocl.if.else.1]",
+            "%1 = phi i32 [1, %ocl.if.then.0], [%0, %ocl.if.merge.1]",
+        ])
+
+    def test_nested_if_in_both_branches_names_both_nested_merges(self):
+        source = ("fn f(a: bool, b: bool, c: bool) -> i32 { "
+                  "return if a { if b { 1 } else { 2 } } else { if c { 3 } else { 4 } }; } "
+                  "fn main() -> i32 { return f(true, true, true); }")
+        phis = self._phi_lines(source)
+        self.assertEqual(phis[-1], "%2 = phi i32 [%0, %ocl.if.merge.1], [%1, %ocl.if.merge.2]")
+
+    def test_bool_arithmetic_is_rejected(self):
+        self.assertDiagnostic("fn main() -> i32 { return true + false; }", "E0211", "requires i32 operands")
+
+    def test_bool_relational_comparison_is_rejected(self):
+        self.assertDiagnostic("fn main() -> i32 { return if true < false { 42 } else { 0 }; }", "E0211", "requires i32 operands")
+
+    def test_equality_requires_matching_types(self):
+        self.assertDiagnostic("fn main() -> i32 { return if true == 1 { 42 } else { 0 }; }", "E0211", "matching operand types")
+
+    def test_if_condition_must_be_bool(self):
+        self.assertDiagnostic("fn main() -> i32 { return if 1 { 42 } else { 0 }; }", "E0212", "condition must be bool")
+
+    def test_if_branches_must_match(self):
+        self.assertDiagnostic("fn main() -> i32 { return if true { 42 } else { false }; }", "E0213", "same type")
+
+    def test_local_initializer_type_must_match(self):
+        self.assertDiagnostic("fn main() -> i32 { let value: bool = 42; return 0; }", "E0214", "expects bool, got i32")
+
+    def test_function_return_type_must_match(self):
+        source = "fn predicate() -> bool { return 42; } fn main() -> i32 { return 0; }"
+        self.assertDiagnostic(source, "E0214", "returns bool, got i32")
+
+    def test_call_argument_type_must_match(self):
+        source = "fn predicate(value: bool) -> bool { return value; } fn main() -> i32 { return if predicate(1) { 42 } else { 0 }; }"
+        self.assertDiagnostic(source, "E0214", "expects bool, got i32")
+
+    def test_main_must_still_return_i32(self):
+        self.assertDiagnostic("fn main() -> bool { return true; }", "E0214", "main function must return i32")
+
+    def test_if_requires_else(self):
+        self.assertDiagnostic("fn main() -> i32 { return if true { 42 }; }", "E0100", "expected 'else'")
+
+    def test_bang_is_not_a_unary_operator(self):
+        self.assertDiagnostic("fn main() -> i32 { return if !false { 42 } else { 0 }; }", "E0001", "invalid token")
+
+    def test_nested_if_chain_compiles_without_recursive_semantic_or_codegen_walks(self):
+        depth = 200
+        expression = "42"
+        for _ in range(depth):
+            expression = f"if true {{ {expression} }} else {{ 0 }}"
+        _, ir = compile_source(f"fn main() -> i32 {{ return {expression}; }}")
+        self.assertEqual(ir.count("phi i32"), depth)
+
+    def test_excessive_if_nesting_is_a_diagnostic(self):
+        depth = 5000
+        expression = "if true { " * depth + "42" + " } else { 0 }" * depth
+        self.assertDiagnostic(f"fn main() -> i32 {{ return {expression}; }}", "E0101", "nested too deeply")
+
+    def test_if_nesting_obeys_the_exact_documented_boundary(self):
+        limit = parser_module.MAX_EXPRESSION_DEPTH
+        expression = "42"
+        for _ in range(limit - 1):
+            expression = f"if true {{ {expression} }} else {{ 0 }}"
+        _, ir = compile_source(f"fn main() -> i32 {{ return {expression}; }}")
+        self.assertEqual(ir.count("phi i32"), limit - 1)
+        expression = f"if true {{ {expression} }} else {{ 0 }}"
+        self.assertDiagnostic(f"fn main() -> i32 {{ return {expression}; }}", "E0101", "nested too deeply")
+
+    def test_multiple_if_expressions_get_unique_generated_blocks(self):
+        source = ("fn main() -> i32 { let first: i32 = if true { 40 } else { 0 }; "
+                  "let second: i32 = if false { 0 } else { 2 }; return first + second; }")
+        _, ir = compile_source(source)
+        labels = [line for line in ir.splitlines() if line.startswith("ocl.if.") and line.endswith(":")]
+        self.assertEqual(len(labels), 6)
+        self.assertEqual(len(set(labels)), 6)
+
+    def test_nested_if_branches_select_the_right_value_natively(self):
+        # IR shape assertions cannot tell a correct phi from a valid but
+        # semantically wrong one, so the whole truth table is executed.
+        require_clang()
+        source = (
+            "fn pick(a: bool, b: bool, c: bool) -> i32 { "
+            "return if a { if b { 11 } else { 22 } } else { if c { 33 } else { 44 } }; } "
+            "fn main() -> i32 { return pick(A, B, C); }"
+        )
+        expected = {
+            ("true", "true", "true"): 11, ("true", "true", "false"): 11,
+            ("true", "false", "true"): 22, ("true", "false", "false"): 22,
+            ("false", "true", "true"): 33, ("false", "true", "false"): 44,
+            ("false", "false", "true"): 33, ("false", "false", "false"): 44,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for (a, b, c), want in expected.items():
+                with self.subTest(a=a, b=b, c=c):
+                    program = source.replace("A", a).replace("B", b).replace("C", c)
+                    path = Path(directory) / "pick.ocl"
+                    path.write_text(program, encoding="utf-8")
+                    executable = Path(directory) / ("pick.exe" if os.name == "nt" else "pick")
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(subprocess.run([str(executable)]).returncode, want)
+
+    def test_native_decision_returns_42(self):
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / ("decisions.exe" if os.name == "nt" else "decisions")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(ROOT / "examples" / "decisions.ocl"), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
+
+
 class DiagnosticRenderingTests(unittest.TestCase):
     """Diagnostics are a product requirement, so the rendered output is asserted."""
 
@@ -602,8 +803,12 @@ class ExpressionDepthTests(DiagnosticAssertions):
         # FRAMES_PER_LEVEL is what reserves enough stack for the documented
         # depth bound. Adding a precedence tier changes it, and a stale value
         # would quietly shrink the guard's margin until it stopped working.
-        def peak_frames(depth):
-            source = "fn main() -> i32 { return " + "(" * depth + "42" + ")" * depth + "; }"
+        def peak_frames(depth, form):
+            if form == "parentheses":
+                expression = "(" * depth + "42" + ")" * depth
+            else:
+                expression = "if true { " * depth + "42" + " } else { 0 }" * depth
+            source = "fn main() -> i32 { return " + expression + "; }"
             peak = [0]
 
             def probe(frame, event, arg):
@@ -625,13 +830,15 @@ class ExpressionDepthTests(DiagnosticAssertions):
         # The slope between two depths, so the fixed cost of the driver and the
         # enclosing function does not distort the per-level figure.
         near, far = 40, 80
-        slope = (peak_frames(far) - peak_frames(near)) / (far - near)
-        self.assertLessEqual(
-            slope, parser_module.FRAMES_PER_LEVEL,
-            f"parsing costs {slope:.2f} frames per nesting level but "
-            f"FRAMES_PER_LEVEL is {parser_module.FRAMES_PER_LEVEL}; raise it so "
-            "the depth guard keeps reserving enough stack",
-        )
+        for form in ("parentheses", "if"):
+            with self.subTest(form=form):
+                slope = (peak_frames(far, form) - peak_frames(near, form)) / (far - near)
+                self.assertLessEqual(
+                    slope, parser_module.FRAMES_PER_LEVEL,
+                    f"{form} parsing costs {slope:.2f} frames per nesting level but "
+                    f"FRAMES_PER_LEVEL is {parser_module.FRAMES_PER_LEVEL}; raise it so "
+                    "the depth guard keeps reserving enough stack",
+                )
 
     def test_excessive_nesting_diagnoses_from_a_deep_caller_stack(self):
         source = "fn main() -> i32 { return " + "(" * 5000 + "42" + ")" * 5000 + "; }"

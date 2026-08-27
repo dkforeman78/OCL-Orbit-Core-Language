@@ -6,10 +6,12 @@ import threading
 from .nodes import (
     I32_MAX,
     BinaryExpression,
+    BooleanLiteral,
     CallExpression,
     Expression,
     Function,
     IdentifierExpression,
+    IfExpression,
     IntegerLiteral,
     LetStatement,
     Parameter,
@@ -27,14 +29,15 @@ _MAX_I32_DIGITS = len(str(I32_MAX))
 # machine-generated source can, and must get a diagnostic instead of a crash.
 MAX_EXPRESSION_DEPTH = 256
 
-# Python frames consumed per level of expression nesting: _expression -> _term
-# -> _primary, which then re-enters _expression. MAX_EXPRESSION_DEPTH is a
+# Python frames consumed per level of expression nesting: _expression through
+# the precedence tiers to _primary, which then re-enters _expression. The count
+# is measured by a mutation-resistant test. MAX_EXPRESSION_DEPTH is a
 # language bound, but the promise attached to it — a diagnostic, never a
 # RecursionError — only holds if the interpreter can actually reach that depth
 # from wherever the caller happens to be. Adding a precedence tier raises this
 # number; `test_frames_per_nesting_level_matches_the_parser` fails if it is
 # stale, so the guard cannot silently stop working.
-FRAMES_PER_LEVEL = 3
+FRAMES_PER_LEVEL = 7
 
 # Slack for the driver, the CLI and the tail of _primary beyond the recursive call.
 _STACK_MARGIN = 96
@@ -111,18 +114,36 @@ class Parser:
         if self.depth > MAX_EXPRESSION_DEPTH:
             raise DiagnosticError(
                 "E0101",
-                f"expression is nested too deeply; OCL 0.3 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                f"expression is nested too deeply; OCL 0.4 allows at most {MAX_EXPRESSION_DEPTH} levels",
                 self.source,
                 self.tokens[self.current].location,
             )
         try:
-            expression = self._term()
-            while self._match(TokenKind.PLUS) or self._match(TokenKind.MINUS):
-                operator = self.tokens[self.current - 1]
-                expression = BinaryExpression(expression, operator.lexeme, self._term(), operator.location)
-            return expression
+            return self._equality()
         finally:
             self.depth -= 1
+
+    def _equality(self) -> Expression:
+        expression = self._comparison()
+        while self._match(TokenKind.EQUAL_EQUAL) or self._match(TokenKind.BANG_EQUAL):
+            operator = self.tokens[self.current - 1]
+            expression = BinaryExpression(expression, operator.lexeme, self._comparison(), operator.location)
+        return expression
+
+    def _comparison(self) -> Expression:
+        expression = self._sum()
+        while (self._match(TokenKind.LESS) or self._match(TokenKind.LESS_EQUAL)
+               or self._match(TokenKind.GREATER) or self._match(TokenKind.GREATER_EQUAL)):
+            operator = self.tokens[self.current - 1]
+            expression = BinaryExpression(expression, operator.lexeme, self._sum(), operator.location)
+        return expression
+
+    def _sum(self) -> Expression:
+        expression = self._term()
+        while self._match(TokenKind.PLUS) or self._match(TokenKind.MINUS):
+            operator = self.tokens[self.current - 1]
+            expression = BinaryExpression(expression, operator.lexeme, self._term(), operator.location)
+        return expression
 
     def _term(self) -> Expression:
         expression = self._primary()
@@ -132,6 +153,10 @@ class Parser:
         return expression
 
     def _primary(self) -> Expression:
+        if self._at(TokenKind.TRUE) or self._at(TokenKind.FALSE):
+            value = self.tokens[self.current]
+            self.current += 1
+            return BooleanLiteral(value.kind is TokenKind.TRUE, value.location)
         if self._at(TokenKind.INTEGER):
             value = self._expect(TokenKind.INTEGER, "expected integer literal")
             return self._integer(value)
@@ -153,8 +178,22 @@ class Parser:
             expression = self._expression()
             self._expect(TokenKind.RIGHT_PAREN, "expected ')' after parenthesized expression")
             return expression
+        if self._at(TokenKind.IF):
+            return self._if_expression()
         token = self.tokens[self.current]
         raise DiagnosticError("E0100", "expected expression", self.source, token.location)
+
+    def _if_expression(self) -> IfExpression:
+        start = self._expect(TokenKind.IF, "expected 'if'")
+        condition = self._expression()
+        self._expect(TokenKind.LEFT_BRACE, "expected '{' before if branch")
+        then_expression = self._expression()
+        self._expect(TokenKind.RIGHT_BRACE, "expected '}' after if branch")
+        self._expect(TokenKind.ELSE, "expected 'else' after if branch")
+        self._expect(TokenKind.LEFT_BRACE, "expected '{' before else branch")
+        else_expression = self._expression()
+        self._expect(TokenKind.RIGHT_BRACE, "expected '}' after else branch")
+        return IfExpression(condition, then_expression, else_expression, start.location)
 
     def _integer(self, value: Token) -> IntegerLiteral:
         # Reject over-long literals before int() runs: CPython refuses to convert
