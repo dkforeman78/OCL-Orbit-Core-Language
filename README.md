@@ -1,6 +1,6 @@
 # OCL — Orbit Core Language
 
-OCL Compiler Prototype 0.4 adds decisions: booleans, typed comparisons, and expression-oriented conditional control flow.
+OCL Compiler Prototype 0.5 adds mutable state, lexical blocks, short-circuit logic, loops, and early returns.
 
 ## Prerequisites
 
@@ -13,11 +13,11 @@ OCL Compiler Prototype 0.4 adds decisions: booleans, typed comparisons, and expr
   back to another compiler. Run `python tools/check_clang_version.py` to confirm
   the toolchain oclc will use.
 - A platform linker supported by Clang. The LLVM Windows installer includes
-  `lld-link`, which is sufficient for Prototype 0.4.
+  `lld-link`, which is sufficient for Prototype 0.5.
 
 The prototype is tested in CI on Windows, Linux, and macOS with Python 3.11 and
 3.12. Windows x86-64 is the primary development host. Cross-compilation and
-ARM64 validation are roadmap work, not 0.4 claims.
+ARM64 validation are roadmap work, not 0.5 claims.
 
 ## Use
 
@@ -39,6 +39,10 @@ $LASTEXITCODE # 42
 
 .\oclc.cmd build examples\decisions.ocl -o decisions.exe
 .\decisions.exe
+$LASTEXITCODE # 42
+
+.\oclc.cmd build examples\repeat.ocl -o repeat.exe
+.\repeat.exe
 $LASTEXITCODE # 42
 ```
 
@@ -72,13 +76,13 @@ minimum.
 
 ## Scope and limitations
 
-Prototype 0.4 supports `i32` and `bool`, typed parameters and immutable locals, function calls, arithmetic, comparisons, equality, parenthesized expressions, and `if`/`else` expressions. Every function still ends in one return statement. See [the language specification](docs/OCL_LANGUAGE_SPEC.md) and [architecture overview](docs/ARCHITECTURE.md).
+Prototype 0.5 supports `i32` and `bool`, immutable `let`, initialized mutable `var`, reassignment, lexical blocks, `while`, early `return`, short-circuit Boolean operators, and all earlier expression forms. See [the language specification](docs/OCL_LANGUAGE_SPEC.md) and [architecture overview](docs/ARCHITECTURE.md).
 
-There is intentionally no mutation, reassignment, type inference, unary minus, division, logical operators, `else if`, loops, early returns, global storage, `.oxr`/`.ofx` generation, custom linker, stabilized OCL ABI, ownership model, package manager, or standard library yet. Native builds use the host format until the canonical Orbit executable specification is supplied.
+There is intentionally no type inference, uninitialized variable, unary minus, division, `else if`, `for`, `break`, `continue`, global storage, `.oxr`/`.ofx` generation, custom linker, stabilized OCL ABI, ownership model, package manager, or standard library yet. Native builds use the host format until the canonical Orbit executable specification is supplied.
 
 Windows executables are linked without the MSVC C runtime and enter directly at
 `main`, which avoids an unnecessary Visual Studio dependency. This holds for
-0.4's parameters, OCL-to-OCL calls, immutable locals, booleans, and conditional control flow, and the
+0.5's functions, locals, Boolean control flow, and loops, and the
 conditions that would invalidate it —
 frames larger than a page, static initializers, any C runtime or system-library
 call, or a need for `argc`/`argv` — are listed in
@@ -86,4 +90,4 @@ call, or a need for `argc`/`argv` — are listed in
 and C ABI linking strategy must be designed before any of those appear.
 The Windows-only linker flags assume Clang's PE/COFF-compatible linker interface;
 they do not select or stabilize a target triple. Clang selects the native host
-target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.4 claim.
+target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.5 claim.

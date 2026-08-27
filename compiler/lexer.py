@@ -11,6 +11,8 @@ class TokenKind(Enum):
     IF = auto()
     ELSE = auto()
     LET = auto()
+    VAR = auto()
+    WHILE = auto()
     RETURN = auto()
     TRUE = auto()
     FALSE = auto()
@@ -29,6 +31,9 @@ class TokenKind(Enum):
     EQUAL = auto()
     EQUAL_EQUAL = auto()
     BANG_EQUAL = auto()
+    BANG = auto()
+    AND_AND = auto()
+    OR_OR = auto()
     LESS = auto()
     LESS_EQUAL = auto()
     GREATER = auto()
@@ -72,6 +77,8 @@ def lex(source: str) -> list[Token]:
             "!=": TokenKind.BANG_EQUAL,
             "<=": TokenKind.LESS_EQUAL,
             ">=": TokenKind.GREATER_EQUAL,
+            "&&": TokenKind.AND_AND,
+            "||": TokenKind.OR_OR,
         }
         pair = source[index:index + 2]
         if pair in compound:
@@ -92,6 +99,7 @@ def lex(source: str) -> list[Token]:
             "=": TokenKind.EQUAL,
             "<": TokenKind.LESS,
             ">": TokenKind.GREATER,
+            "!": TokenKind.BANG,
             ";": TokenKind.SEMICOLON,
         }
         if char in single:
@@ -112,6 +120,8 @@ def lex(source: str) -> list[Token]:
                 "let": TokenKind.LET,
                 "return": TokenKind.RETURN,
                 "true": TokenKind.TRUE,
+                "var": TokenKind.VAR,
+                "while": TokenKind.WHILE,
             }.get(word, TokenKind.IDENTIFIER)
             tokens.append(Token(kind, word, start))
             column += end - index

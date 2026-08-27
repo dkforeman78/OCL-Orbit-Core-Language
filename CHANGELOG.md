@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 - Unreleased
+
+- Added initialized mutable `var` bindings and type-checked reassignment while preserving immutable SSA `let` bindings.
+- Added lexical statement blocks, `while` statements, and early `return` with fallthrough and unreachable-code diagnostics.
+- Added short-circuiting `&&` and `||` plus unary Boolean `!` with conventional precedence.
+- Added LLVM entry-block storage, loads/stores, loop CFGs, and phi-based short-circuit lowering without changing the external ABI.
+- Added the `repeat.ocl` native acceptance program and extended all six CI jobs.
+
 ## 0.4.0 - 2026-08-27
 
 - Added the `bool` type and `true`/`false` literals for parameters, locals, function results, and expressions.

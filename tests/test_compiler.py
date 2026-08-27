@@ -14,7 +14,7 @@ from compiler import cli, parser as parser_module
 from compiler.codegen import _escape_llvm_string, generate_llvm_ir
 from compiler.diagnostics import DiagnosticError, InternalCompilerError, SourceLocation
 from compiler.driver import compile_source
-from compiler.nodes import BinaryExpression, BooleanLiteral, CallExpression, Function, IdentifierExpression, IfExpression, IntegerLiteral, LetStatement, Program, ReturnStatement
+from compiler.nodes import AssignmentStatement, BinaryExpression, BlockStatement, BooleanLiteral, CallExpression, Function, IdentifierExpression, IfExpression, IntegerLiteral, LetStatement, Program, ReturnStatement, UnaryExpression, VarStatement, WhileStatement
 from compiler.semantic import analyze
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "tools"))
@@ -100,10 +100,10 @@ class SemanticTests(DiagnosticAssertions):
         self.assertEqual(error.location.line, 2)
 
     def test_empty_body_is_rejected(self):
-        self.assertDiagnostic("fn main() -> i32 { }", "E0202", "exactly one return statement")
+        self.assertDiagnostic("fn main() -> i32 { }", "E0202", "without returning")
 
     def test_two_return_statements_are_rejected(self):
-        self.assertDiagnostic("fn main() -> i32 { return 1; return 2; }", "E0202", "exactly one return statement")
+        self.assertDiagnostic("fn main() -> i32 { return 1; return 2; }", "E0216", "unreachable")
 
     def test_i32_upper_bound_is_accepted(self):
         program, ir = compile_source("fn main() -> i32 { return 2147483647; }")
@@ -286,7 +286,7 @@ class Ocl03Tests(DiagnosticAssertions):
         # parameter: "already declared" would send the reader hunting for a
         # `let` that does not exist.
         source = "fn f(value: i32) -> i32 { let value: i32 = 1; return value; } fn main() -> i32 { return f(42); }"
-        error = self.assertDiagnostic(source, "E0210", "conflicts with parameter")
+        error = self.assertDiagnostic(source, "E0210", "already declared")
         self.assertIn("'value'", error.message)
 
     def test_duplicate_local_message_says_local(self):
@@ -299,20 +299,20 @@ class Ocl03Tests(DiagnosticAssertions):
 
     def test_return_must_be_the_final_statement(self):
         source = "fn main() -> i32 { return 1; let value: i32 = 42; }"
-        self.assertDiagnostic(source, "E0202", "end with exactly one return")
+        self.assertDiagnostic(source, "E0216", "unreachable")
 
     def test_missing_local_initializer_is_rejected(self):
         self.assertDiagnostic("fn main() -> i32 { let value: i32; return value; }", "E0100", "expected '='")
 
     def test_local_binding_does_not_replace_the_required_return(self):
-        self.assertDiagnostic("fn main() -> i32 { let value: i32 = 42; }", "E0202", "end with exactly one return")
+        self.assertDiagnostic("fn main() -> i32 { let value: i32 = 42; }", "E0202", "without returning")
 
     def test_missing_closing_parenthesis_is_rejected(self):
         self.assertDiagnostic("fn main() -> i32 { return (40 + 2; }", "E0100", "expected ')'")
 
     def test_reassignment_is_not_part_of_ocl_03(self):
         source = "fn main() -> i32 { let value: i32 = 1; value = 42; return value; }"
-        self.assertDiagnostic(source, "E0100", "expected 'return'")
+        self.assertDiagnostic(source, "E0215", "immutable")
 
     def test_native_local_computation_returns_42(self):
         require_clang()
@@ -452,8 +452,9 @@ class Ocl04Tests(DiagnosticAssertions):
     def test_if_requires_else(self):
         self.assertDiagnostic("fn main() -> i32 { return if true { 42 }; }", "E0100", "expected 'else'")
 
-    def test_bang_is_not_a_unary_operator(self):
-        self.assertDiagnostic("fn main() -> i32 { return if !false { 42 } else { 0 }; }", "E0001", "invalid token")
+    def test_bang_was_not_a_unary_operator_before_05(self):
+        _, ir = compile_source("fn main() -> i32 { return if !false { 42 } else { 0 }; }")
+        self.assertIn("xor i1 0, true", ir)
 
     def test_nested_if_chain_compiles_without_recursive_semantic_or_codegen_walks(self):
         depth = 200
@@ -527,6 +528,89 @@ class Ocl04Tests(DiagnosticAssertions):
             self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
 
 
+class Ocl05Tests(DiagnosticAssertions):
+    SOURCE = ("fn main() -> i32 { var total: i32 = 0; var count: i32 = 0; "
+              "while count < 6 && !(count == 99) { total = total + 7; count = count + 1; } return total; }")
+
+    def test_mutation_and_while_ast(self):
+        program, _ = compile_source(self.SOURCE)
+        body = program.functions[0].body
+        self.assertIsInstance(body[0], VarStatement)
+        self.assertIsInstance(body[2], WhileStatement)
+        self.assertIsInstance(body[2].body, BlockStatement)
+        self.assertIsInstance(body[2].body.statements[0], AssignmentStatement)
+
+    def test_mutable_storage_and_loop_cfg_lower(self):
+        _, ir = compile_source(self.SOURCE)
+        self.assertIn("%ocl.var.total = alloca i32", ir)
+        self.assertIn("ocl.while.condition.0:", ir)
+        self.assertIn("ocl.while.body.0:", ir)
+        self.assertIn("ocl.while.exit.0:", ir)
+        self.assertIn("store i32", ir)
+        self.assertIn("load i32", ir)
+
+    def test_logical_operators_short_circuit_with_phi(self):
+        _, ir = compile_source("fn main() -> i32 { return if true || false && false { 42 } else { 0 }; }")
+        self.assertEqual(ir.count("phi i1"), 2)
+        self.assertIn("phi i1 [1, %ocl.entry], [%0, %ocl.logic.merge.1]", ir)
+
+    def test_short_circuit_skips_the_right_operand_natively(self):
+        require_clang()
+        source = ("fn never() -> bool { return never(); } "
+                  "fn main() -> i32 { return if true || never() { 42 } else { 0 }; }")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "short_circuit.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / ("short_circuit.exe" if os.name == "nt" else "short_circuit")
+            result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(subprocess.run([str(executable)], timeout=5).returncode, 42)
+
+    def test_unary_not_requires_bool(self):
+        self.assertDiagnostic("fn main() -> i32 { return if !1 { 42 } else { 0 }; }", "E0211", "bool operand")
+
+    def test_excessive_unary_nesting_is_a_diagnostic(self):
+        source = "fn main() -> i32 { return if " + "!" * 5000 + "false { 42 } else { 0 }; }"
+        self.assertDiagnostic(source, "E0101", "nested too deeply")
+
+    def test_logical_operators_require_bool(self):
+        self.assertDiagnostic("fn main() -> i32 { return if true && 1 { 42 } else { 0 }; }", "E0211", "bool operands")
+
+    def test_assignment_requires_var(self):
+        self.assertDiagnostic("fn main() -> i32 { let x: i32 = 1; x = 2; return x; }", "E0215", "immutable")
+
+    def test_assignment_type_must_match(self):
+        self.assertDiagnostic("fn main() -> i32 { var x: i32 = 1; x = false; return x; }", "E0214", "expects i32")
+
+    def test_while_condition_must_be_bool(self):
+        self.assertDiagnostic("fn main() -> i32 { while 1 { return 1; } return 42; }", "E0212", "while condition")
+
+    def test_block_local_is_not_visible_after_block(self):
+        self.assertDiagnostic("fn main() -> i32 { { let x: i32 = 42; } return x; }", "E0206", "unknown identifier")
+
+    def test_shadowing_remains_forbidden_in_nested_blocks(self):
+        self.assertDiagnostic("fn main() -> i32 { let x: i32 = 1; { let x: i32 = 2; } return x; }", "E0210", "no shadowing")
+
+    def test_early_return_in_block_terminates_function(self):
+        _, ir = compile_source("fn main() -> i32 { { return 42; } }")
+        self.assertIn("ret i32 42", ir)
+
+    def test_function_fallthrough_is_rejected(self):
+        self.assertDiagnostic("fn main() -> i32 { var x: i32 = 1; }", "E0202", "without returning")
+
+    def test_excessive_block_nesting_is_a_diagnostic(self):
+        source = "fn main() -> i32 { " + "{" * 5000 + "return 42;" + "}" * 5000 + " }"
+        self.assertDiagnostic(source, "E0102", "block is nested too deeply")
+
+    def test_native_repetition_returns_42(self):
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / ("repeat.exe" if os.name == "nt" else "repeat")
+            result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(ROOT / "examples" / "repeat.ocl"), "-o", str(executable)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
+
+
 class DiagnosticRenderingTests(unittest.TestCase):
     """Diagnostics are a product requirement, so the rendered output is asserted."""
 
@@ -585,7 +669,7 @@ class CodegenTests(unittest.TestCase):
         program = Program((Function("main", "i32", body, location),))
         with self.assertRaises(DiagnosticError) as caught:
             analyze(program, "")
-        self.assertEqual(caught.exception.code, "E0202")
+        self.assertEqual(caught.exception.code, "E0216")
 
     def test_source_filename_is_escaped_as_utf8_bytes(self):
         escaped = _escape_llvm_string('quote" slash\\ newline\n snowman-☃.ocl')
