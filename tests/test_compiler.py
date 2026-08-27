@@ -4,16 +4,17 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
-from compiler import cli
+from compiler import cli, parser as parser_module
 from compiler.codegen import _escape_llvm_string, generate_llvm_ir
 from compiler.diagnostics import DiagnosticError, InternalCompilerError, SourceLocation
 from compiler.driver import compile_source
-from compiler.nodes import BinaryExpression, CallExpression, Function, IdentifierExpression, IntegerLiteral, Program, ReturnStatement
+from compiler.nodes import BinaryExpression, CallExpression, Function, IdentifierExpression, IntegerLiteral, LetStatement, Program, ReturnStatement
 from compiler.semantic import analyze
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "tools"))
@@ -85,8 +86,8 @@ class FrontendTests(DiagnosticAssertions):
         self.assertDiagnostic(source, "E0100", "expected argument after ','")
 
     def test_negative_literal_is_rejected(self):
-        # 0.1 has no unary minus, and '-' must not be silently absorbed by '->'.
-        self.assertDiagnostic("fn main() -> i32 { return -1; }", "E0001", "invalid token")
+        # 0.3 has binary subtraction but still has no unary minus.
+        self.assertDiagnostic("fn main() -> i32 { return -1; }", "E0100", "expected expression")
 
 
 class SemanticTests(DiagnosticAssertions):
@@ -214,6 +215,111 @@ class Ocl02Tests(unittest.TestCase):
             executable = Path(directory) / ("add.exe" if os.name == "nt" else "add")
             result = subprocess.run(
                 [sys.executable, str(ROOT / "oclc.py"), "build", str(ROOT / "examples" / "add.ocl"), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
+
+
+class Ocl03Tests(DiagnosticAssertions):
+    SOURCE = (
+        "fn calculate(a: i32, b: i32) -> i32 {\n"
+        "    let product: i32 = a * b;\n"
+        "    let adjusted: i32 = product - 2;\n"
+        "    return adjusted + (2 * 2);\n"
+        "}\n\n"
+        "fn main() -> i32 {\n"
+        "    return calculate(5, 8);\n"
+        "}\n"
+    )
+
+    def test_local_computation_ast(self):
+        program, _ = compile_source(self.SOURCE)
+        calculate = program.functions[0]
+        self.assertEqual(len(calculate.body), 3)
+        self.assertIsInstance(calculate.body[0], LetStatement)
+        self.assertEqual((calculate.body[0].name, calculate.body[0].type_name), ("product", "i32"))
+        self.assertIsInstance(calculate.body[-1], ReturnStatement)
+
+    def test_local_computation_llvm_ir(self):
+        _, ir = compile_source(self.SOURCE, "local.ocl")
+        self.assertIn("%0 = mul i32 %a, %b", ir)
+        self.assertIn("%1 = sub i32 %0, 2", ir)
+        self.assertIn("%2 = mul i32 2, 2", ir)
+        self.assertIn("%3 = add i32 %1, %2", ir)
+        self.assertNotIn("alloca", ir)
+        self.assertNotIn("store", ir)
+
+    def test_multiplication_has_higher_precedence(self):
+        _, ir = compile_source("fn main() -> i32 { return 2 + 3 * 4; }")
+        operations = [line.strip() for line in ir.splitlines() if " = " in line and "i32" in line]
+        self.assertEqual(operations, ["%0 = mul i32 3, 4", "%1 = add i32 2, %0"])
+
+    def test_parentheses_override_precedence(self):
+        _, ir = compile_source("fn main() -> i32 { return (2 + 3) * 4; }")
+        operations = [line.strip() for line in ir.splitlines() if " = " in line and "i32" in line]
+        self.assertEqual(operations, ["%0 = add i32 2, 3", "%1 = mul i32 %0, 4"])
+
+    def test_addition_and_subtraction_are_left_associative(self):
+        _, ir = compile_source("fn main() -> i32 { return 20 - 3 + 25; }")
+        self.assertIn("%0 = sub i32 20, 3", ir)
+        self.assertIn("%1 = add i32 %0, 25", ir)
+
+    def test_earlier_local_is_visible(self):
+        _, ir = compile_source("fn main() -> i32 { let first: i32 = 40; let answer: i32 = first + 2; return answer; }")
+        self.assertIn("%0 = add i32 40, 2", ir)
+        self.assertIn("ret i32 %0", ir)
+
+    def test_local_cannot_reference_itself(self):
+        self.assertDiagnostic("fn main() -> i32 { let answer: i32 = answer; return answer; }", "E0206", "unknown identifier 'answer'")
+
+    def test_local_cannot_reference_a_later_local(self):
+        source = "fn main() -> i32 { let first: i32 = second; let second: i32 = 42; return first; }"
+        self.assertDiagnostic(source, "E0206", "unknown identifier 'second'")
+
+    def test_duplicate_local_is_rejected(self):
+        source = "fn main() -> i32 { let value: i32 = 1; let value: i32 = 2; return value; }"
+        self.assertDiagnostic(source, "E0210", "already declared")
+
+    def test_local_cannot_shadow_parameter(self):
+        # Distinct rule from a duplicate local, so the message names the
+        # parameter: "already declared" would send the reader hunting for a
+        # `let` that does not exist.
+        source = "fn f(value: i32) -> i32 { let value: i32 = 1; return value; } fn main() -> i32 { return f(42); }"
+        error = self.assertDiagnostic(source, "E0210", "conflicts with parameter")
+        self.assertIn("'value'", error.message)
+
+    def test_duplicate_local_message_says_local(self):
+        source = "fn main() -> i32 { let a: i32 = 1; let a: i32 = 2; return a; }"
+        error = self.assertDiagnostic(source, "E0210", "already declared")
+        self.assertNotIn("parameter", error.message)
+
+    def test_local_type_must_be_i32(self):
+        self.assertDiagnostic("fn main() -> i32 { let value: i64 = 42; return value; }", "E0200", "unknown type 'i64'")
+
+    def test_return_must_be_the_final_statement(self):
+        source = "fn main() -> i32 { return 1; let value: i32 = 42; }"
+        self.assertDiagnostic(source, "E0202", "end with exactly one return")
+
+    def test_missing_local_initializer_is_rejected(self):
+        self.assertDiagnostic("fn main() -> i32 { let value: i32; return value; }", "E0100", "expected '='")
+
+    def test_local_binding_does_not_replace_the_required_return(self):
+        self.assertDiagnostic("fn main() -> i32 { let value: i32 = 42; }", "E0202", "end with exactly one return")
+
+    def test_missing_closing_parenthesis_is_rejected(self):
+        self.assertDiagnostic("fn main() -> i32 { return (40 + 2; }", "E0100", "expected ')'")
+
+    def test_reassignment_is_not_part_of_ocl_03(self):
+        source = "fn main() -> i32 { let value: i32 = 1; value = 42; return value; }"
+        self.assertDiagnostic(source, "E0100", "expected 'return'")
+
+    def test_native_local_computation_returns_42(self):
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / ("local.exe" if os.name == "nt" else "local")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(ROOT / "examples" / "local.ocl"), "-o", str(executable)],
                 capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -452,6 +558,176 @@ class ExpressionDepthTests(DiagnosticAssertions):
         _, ir = compile_source("fn main() -> i32 { return " + "+".join(["1"] * terms) + "; }")
         self.assertEqual(ir.count("add i32"), terms - 1)
 
+    def test_very_long_multiplication_chain_still_compiles(self):
+        terms = 20000
+        _, ir = compile_source("fn main() -> i32 { return " + "*".join(["1"] * terms) + "; }")
+        self.assertEqual(ir.count("mul i32"), terms - 1)
+
+    def test_deep_parentheses_within_the_limit_compile(self):
+        depth = 200
+        source = "fn main() -> i32 { return " + "(" * depth + "42" + ")" * depth + "; }"
+        _, ir = compile_source(source)
+        self.assertIn("ret i32 42", ir)
+
+    def test_the_documented_depth_limit_is_exactly_the_boundary(self):
+        # The limit is a published number, so both sides of it are asserted.
+        limit = parser_module.MAX_EXPRESSION_DEPTH
+        at_limit = "fn main() -> i32 { return " + "(" * (limit - 1) + "42" + ")" * (limit - 1) + "; }"
+        _, ir = compile_source(at_limit)
+        self.assertIn("ret i32 42", ir)
+        past_limit = "fn main() -> i32 { return " + "(" * limit + "42" + ")" * limit + "; }"
+        self.assertDiagnostic(past_limit, "E0101", "nested too deeply")
+
+    def test_max_depth_expression_survives_a_deep_caller_stack(self):
+        # The guard promises a diagnostic rather than a RecursionError. That
+        # promise depends on Python frames still being available, so it must hold
+        # when the compiler is embedded rather than only at the CLI's shallow
+        # baseline stack.
+        limit = parser_module.MAX_EXPRESSION_DEPTH
+        source = "fn main() -> i32 { return " + "(" * (limit - 1) + "42" + ")" * (limit - 1) + "; }"
+
+        def deepen(remaining, action):
+            if remaining == 0:
+                return action()
+            return deepen(remaining - 1, action)
+
+        previous_limit = sys.getrecursionlimit()
+        for caller_depth in (0, 200, 400):
+            with self.subTest(caller_depth=caller_depth):
+                _, ir = deepen(caller_depth, lambda: compile_source(source))
+                self.assertIn("ret i32 42", ir)
+                self.assertEqual(sys.getrecursionlimit(), previous_limit)
+
+    def test_frames_per_nesting_level_matches_the_parser(self):
+        # FRAMES_PER_LEVEL is what reserves enough stack for the documented
+        # depth bound. Adding a precedence tier changes it, and a stale value
+        # would quietly shrink the guard's margin until it stopped working.
+        def peak_frames(depth):
+            source = "fn main() -> i32 { return " + "(" * depth + "42" + ")" * depth + "; }"
+            peak = [0]
+
+            def probe(frame, event, arg):
+                if event == "call":
+                    current, walker = 0, frame
+                    while walker is not None:
+                        current += 1
+                        walker = walker.f_back
+                    peak[0] = max(peak[0], current)
+                return None
+
+            sys.setprofile(probe)
+            try:
+                compile_source(source)
+            finally:
+                sys.setprofile(None)
+            return peak[0]
+
+        # The slope between two depths, so the fixed cost of the driver and the
+        # enclosing function does not distort the per-level figure.
+        near, far = 40, 80
+        slope = (peak_frames(far) - peak_frames(near)) / (far - near)
+        self.assertLessEqual(
+            slope, parser_module.FRAMES_PER_LEVEL,
+            f"parsing costs {slope:.2f} frames per nesting level but "
+            f"FRAMES_PER_LEVEL is {parser_module.FRAMES_PER_LEVEL}; raise it so "
+            "the depth guard keeps reserving enough stack",
+        )
+
+    def test_excessive_nesting_diagnoses_from_a_deep_caller_stack(self):
+        source = "fn main() -> i32 { return " + "(" * 5000 + "42" + ")" * 5000 + "; }"
+
+        def deepen(remaining, action):
+            if remaining == 0:
+                return action()
+            return deepen(remaining - 1, action)
+
+        with self.assertRaises(DiagnosticError) as caught:
+            deepen(400, lambda: compile_source(source))
+        self.assertEqual(caught.exception.code, "E0101")
+
+    def test_recursion_limit_is_restored_after_a_diagnostic(self):
+        # Force the reservation branch, then prove finally restores the exact
+        # prior value when parsing exits through E0101 rather than success.
+        original_limit = sys.getrecursionlimit()
+        forced_limit = 200
+        source = "fn main() -> i32 { return " + "(" * 5000 + "42" + ")" * 5000 + "; }"
+        try:
+            sys.setrecursionlimit(forced_limit)
+            with self.assertRaises(DiagnosticError) as caught:
+                compile_source(source)
+            self.assertEqual(caught.exception.code, "E0101")
+            self.assertEqual(sys.getrecursionlimit(), forced_limit)
+        finally:
+            sys.setrecursionlimit(original_limit)
+
+    def test_overlapping_parse_calls_are_serialized(self):
+        # Parser.parse is held while the recursion limit may differ from its
+        # baseline. A second thread must not enter until the first releases it,
+        # or their save/restore operations could interleave.
+        first_entered = threading.Event()
+        second_started = threading.Event()
+        second_entered = threading.Event()
+        release_first = threading.Event()
+        invocation = [0]
+        invocation_lock = threading.Lock()
+        errors: list[BaseException] = []
+        original_parse = parser_module.Parser.parse
+
+        def controlled_parse(parser):
+            with invocation_lock:
+                invocation[0] += 1
+                position = invocation[0]
+            if position == 1:
+                first_entered.set()
+                if not release_first.wait(5):
+                    raise AssertionError("timed out waiting to release first parse")
+            else:
+                second_entered.set()
+            return original_parse(parser)
+
+        def compile_in_thread(started=None):
+            if started is not None:
+                started.set()
+            try:
+                compile_source(VALID)
+            except BaseException as error:
+                errors.append(error)
+
+        with mock.patch.object(parser_module.Parser, "parse", controlled_parse):
+            first = threading.Thread(target=compile_in_thread)
+            second = threading.Thread(target=compile_in_thread, args=(second_started,))
+            first.start()
+            self.assertTrue(first_entered.wait(5), "first parse never entered")
+            second.start()
+            self.assertTrue(second_started.wait(5), "second compiler call never started")
+            self.assertFalse(second_entered.wait(1), "overlapping parse entered while the first held the reservation")
+            release_first.set()
+            first.join(5)
+            second.join(5)
+
+        self.assertFalse(first.is_alive() or second.is_alive(), "compiler thread did not finish")
+        self.assertEqual(errors, [])
+        self.assertTrue(second_entered.is_set(), "second parse never ran after the first completed")
+
+    def test_recursion_limit_lock_is_reentrant(self):
+        # A future nested same-thread parse must not deadlock. This also catches
+        # an accidental downgrade from RLock to Lock without needing to hang.
+        lock = parser_module._RECURSION_LIMIT_LOCK
+        self.assertTrue(lock.acquire(timeout=1))
+        nested = False
+        try:
+            nested = lock.acquire(blocking=False)
+            self.assertTrue(nested, "parser recursion-limit lock must be reentrant")
+        finally:
+            if nested:
+                lock.release()
+            lock.release()
+
+    def test_excessive_parentheses_are_a_diagnostic_not_a_crash(self):
+        depth = 5000
+        source = "fn main() -> i32 { return " + "(" * depth + "42" + ")" * depth + "; }"
+        self.assertDiagnostic(source, "E0101", "nested too deeply")
+
     def test_deeply_nested_calls_within_the_limit_compile(self):
         depth = 200
         source = ("fn id(a: i32) -> i32 { return a; }\nfn main() -> i32 { return "
@@ -549,6 +825,14 @@ class EvaluationOrderTests(unittest.TestCase):
             "%2 = call i32 @two(i32 %0, i32 %1)",
         ])
 
+    def test_local_initializers_are_emitted_in_source_order(self):
+        source = ("fn id(a: i32) -> i32 { return a; }\n"
+                  "fn main() -> i32 { let first: i32 = id(1); "
+                  "let second: i32 = id(2); return first + second + 39; }\n")
+        _, ir = compile_source(source)
+        calls = [line.strip() for line in ir.splitlines() if "call i32 @id" in line]
+        self.assertEqual(calls, ["%0 = call i32 @id(i32 1)", "%1 = call i32 @id(i32 2)"])
+
 
 class UnknownNodeTests(unittest.TestCase):
     """I2: both passes must fail as an internal error, never a bare exception."""
@@ -584,6 +868,13 @@ class OverflowSemanticsTests(unittest.TestCase):
     def test_overflowing_addition_is_accepted(self):
         program, _ = compile_source("fn main() -> i32 { return 2147483647 + 1; }")
         self.assertEqual(len(program.functions), 1)
+
+    def test_subtraction_and_multiplication_do_not_request_poison(self):
+        _, ir = compile_source("fn main() -> i32 { return (0 - 1) * 2147483647; }")
+        self.assertIn("sub i32 0, 1", ir)
+        self.assertIn("mul i32", ir)
+        self.assertNotIn("nsw", ir)
+        self.assertNotIn("nuw", ir)
 
     def test_literal_boundary_is_still_enforced(self):
         # Wrapping applies to arithmetic, not to literals, which stay bounded.

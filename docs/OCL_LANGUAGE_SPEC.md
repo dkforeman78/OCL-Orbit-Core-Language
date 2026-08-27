@@ -1,6 +1,6 @@
-# OCL Language Specification — Prototype 0.2
+# OCL Language Specification — Prototype 0.3
 
-This document describes only the implemented 0.2 subset. It is not a stability promise for later OCL releases.
+This document describes only the implemented 0.3 subset. It is not a stability promise for later OCL releases.
 
 ## Grammar
 
@@ -10,36 +10,44 @@ function         = "fn" , identifier , "(" , [ parameters ] , ")" , "->" , type 
 parameters       = parameter , { "," , parameter } ;
 parameter        = identifier , ":" , type ;
 type             = "i32" ;
-body             = "{" , return-statement , "}" ;
+body             = "{" , { let-statement } , return-statement , "}" ;
+let-statement    = "let" , identifier , ":" , type , "=" , expression , ";" ;
 return-statement = "return" , expression , ";" ;
-expression       = primary , { "+" , primary } ;
-primary          = integer-literal | identifier | call ;
+expression       = term , { ( "+" | "-" ) , term } ;
+term             = primary , { "*" , primary } ;
+primary          = integer-literal | call | identifier | "(" , expression , ")" ;
 call             = identifier , "(" , [ arguments ] , ")" ;
 arguments        = expression , { "," , expression } ;
 ```
 
-Identifiers contain ASCII letters, digits, and underscores and cannot begin with a digit. Whitespace is insignificant. Addition is left-associative. Comments, variables, parenthesized expressions, and negative literals are not part of 0.2.
+Identifiers contain ASCII letters, digits, and underscores and cannot begin with a digit. `fn`, `let`, and `return` are reserved keywords. Whitespace is insignificant. Multiplication has higher precedence than addition and subtraction. Operators at the same precedence are left-associative. Parentheses override precedence. Comments and negative literals are not part of 0.3; `-` is binary subtraction only.
 
 ## Semantics
 
 - A program must define `main`.
-- Every function returns one `i32` expression.
+- Every function contains zero or more immutable local bindings followed by exactly one `return` statement. A local is introduced by `let name: i32 = expression;` and cannot be reassigned.
 - Parameters and arguments are `i32`; parameter names must be unique within a function.
-- Identifier expressions resolve only to parameters. Function calls may refer to functions declared later in the file.
+- Identifier expressions resolve to parameters or earlier local bindings. An initializer is analyzed before its local name enters scope, so self-reference and references to later locals are rejected.
+- Local names must be unique within a function and cannot shadow parameters. OCL 0.3 has one function-wide local scope and no shadowing.
+- Function calls may refer to functions declared later in the file.
 - Calls must resolve to a declared function and supply exactly its declared number of arguments.
 - `main` must have no parameters.
 - Duplicate function names are rejected.
-- **Prototype 0.2 `i32` addition wraps.** Addition is evaluated modulo 2^32 in
-  two's-complement representation, so `2147483647 + 1` is defined and equals
+- **Prototype 0.3 `i32` arithmetic wraps.** Addition, subtraction, and
+  multiplication are evaluated modulo 2^32 in two's-complement representation,
+  so `2147483647 + 1` is defined and equals
   `-2147483648`. The prototype never inherits C's undefined signed overflow.
   This records and tests the current implementation; it does **not** stabilize
   OCL's permanent overflow policy. Checked, wrapping, or saturating behavior may
   later differ by Safe/Systems/Bare profile, subject to design-authority review.
   Integer *literals* are separate and remain bounded by `i32` (`E0203`).
 - Expressions may nest at most 256 levels deep; exceeding that is a diagnostic
-  (`E0101`), never a compiler failure. Addition chains are folded iteratively and
-  cost no nesting depth, so the limit is reached only through nested calls. The
-  limit is an implementation bound, not a language constant, and may rise.
+  (`E0101`), never a compiler failure. Binary-operator chains are folded
+  iteratively and cost no nesting depth, so the limit is reached through nested
+  calls or parenthesized expressions. The
+  limit is an implementation bound, not a language constant, and may rise. The
+  bound is enforced independently of how deep the calling program's own stack is,
+  so the same source always produces the same result.
 - `main` is emitted using LLVM's default host calling convention. On Windows it is
   linked directly as the CRT-free executable entry point. No broader OCL ABI or
   runtime contract is stabilized.
@@ -58,4 +66,4 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
 
 ## Safety and compatibility status
 
-Prototype 0.2 has no pointers, allocation, ownership, references, or concurrency, so it makes no permanent memory-model decision. Integer literals are range checked, and arithmetic uses the provisional, defined wrapping behavior described above. The final overflow policy, textual syntax, OCL ABI, and executable format remain provisional.
+Prototype 0.3 has no pointers, allocation, ownership, references, mutation, or concurrency, so it makes no permanent memory-model decision. Integer literals are range checked, and arithmetic uses the provisional, defined wrapping behavior described above. The final overflow policy, broader variable model, textual syntax, OCL ABI, and executable format remain provisional.

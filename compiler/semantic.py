@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .nodes import BinaryExpression, CallExpression, Expression, I32_MAX, IdentifierExpression, IntegerLiteral, Program
+from .nodes import BinaryExpression, CallExpression, Expression, I32_MAX, IdentifierExpression, IntegerLiteral, LetStatement, Program, ReturnStatement
 from .diagnostics import DiagnosticError, InternalCompilerError, SourceLocation
 
 
@@ -11,11 +11,11 @@ def analyze(program: Program, source: str) -> None:
             raise DiagnosticError("E0201", f"duplicate function '{function.name}'", source, function.location)
         functions[function.name] = function
         if function.return_type != "i32":
-            raise DiagnosticError("E0200", f"unknown type '{function.return_type}'; OCL 0.2 supports only i32", source, function.location)
+            raise DiagnosticError("E0200", f"unknown type '{function.return_type}'; OCL 0.3 supports only i32", source, function.location)
         parameter_names: set[str] = set()
         for parameter in function.parameters:
             if parameter.type_name != "i32":
-                raise DiagnosticError("E0200", f"unknown type '{parameter.type_name}'; OCL 0.2 supports only i32", source, parameter.location)
+                raise DiagnosticError("E0200", f"unknown type '{parameter.type_name}'; OCL 0.3 supports only i32", source, parameter.location)
             if parameter.name in parameter_names:
                 raise DiagnosticError("E0205", f"duplicate parameter '{parameter.name}'", source, parameter.location)
             parameter_names.add(parameter.name)
@@ -27,10 +27,28 @@ def analyze(program: Program, source: str) -> None:
         raise DiagnosticError("E0209", "main function must not declare parameters", source, functions["main"].location)
 
     for function in program.functions:
-        if len(function.body) != 1:
-            raise DiagnosticError("E0202", "function body must contain exactly one return statement", source, function.location)
-        scope = {parameter.name for parameter in function.parameters}
-        _analyze_expression(function.body[0].expression, scope, functions, source)
+        returns = [statement for statement in function.body if isinstance(statement, ReturnStatement)]
+        if len(returns) != 1 or not function.body or function.body[-1] is not returns[0]:
+            raise DiagnosticError("E0202", "function body must end with exactly one return statement", source, function.location)
+        parameter_names = {parameter.name for parameter in function.parameters}
+        scope = set(parameter_names)
+        for statement in function.body:
+            if isinstance(statement, LetStatement):
+                if statement.type_name != "i32":
+                    raise DiagnosticError("E0200", f"unknown type '{statement.type_name}'; OCL 0.3 supports only i32", source, statement.location)
+                # Shadowing a parameter and redeclaring a local are separate
+                # rules, so they get separate messages: "already declared" would
+                # send the reader hunting for a `let` that does not exist.
+                if statement.name in parameter_names:
+                    raise DiagnosticError("E0210", f"local '{statement.name}' conflicts with parameter '{statement.name}'; OCL 0.3 has no shadowing", source, statement.location)
+                if statement.name in scope:
+                    raise DiagnosticError("E0210", f"local name '{statement.name}' is already declared in this function", source, statement.location)
+                _analyze_expression(statement.initializer, scope, functions, source)
+                scope.add(statement.name)
+            elif isinstance(statement, ReturnStatement):
+                _analyze_expression(statement.expression, scope, functions, source)
+            else:
+                raise InternalCompilerError(f"unsupported statement node: {type(statement).__name__}")
 
 
 def _analyze_expression(expression: Expression, scope: set[str], functions: dict, source: str) -> None:

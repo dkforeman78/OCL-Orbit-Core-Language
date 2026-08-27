@@ -1,6 +1,6 @@
 # OCL — Orbit Core Language
 
-OCL Compiler Prototype 0.2 extends the proven bootstrap path with typed function parameters, identifiers, addition, and function calls.
+OCL Compiler Prototype 0.3 adds local computation: immutable typed locals, parenthesized expressions, subtraction, multiplication, and conventional arithmetic precedence.
 
 ## Prerequisites
 
@@ -13,11 +13,11 @@ OCL Compiler Prototype 0.2 extends the proven bootstrap path with typed function
   back to another compiler. Run `python tools/check_clang_version.py` to confirm
   the toolchain oclc will use.
 - A platform linker supported by Clang. The LLVM Windows installer includes
-  `lld-link`, which is sufficient for Prototype 0.2.
+  `lld-link`, which is sufficient for Prototype 0.3.
 
 The prototype is tested in CI on Windows, Linux, and macOS with Python 3.11 and
 3.12. Windows x86-64 is the primary development host. Cross-compilation and
-ARM64 validation are roadmap work, not 0.2 claims.
+ARM64 validation are roadmap work, not 0.3 claims.
 
 ## Use
 
@@ -31,6 +31,10 @@ $LASTEXITCODE # 42
 
 .\oclc.cmd build examples\add.ocl -o add.exe
 .\add.exe
+$LASTEXITCODE # 42
+
+.\oclc.cmd build examples\local.ocl -o local.exe
+.\local.exe
 $LASTEXITCODE # 42
 ```
 
@@ -64,17 +68,18 @@ minimum.
 
 ## Scope and limitations
 
-Prototype 0.2 supports `i32` function parameters, parameter references, addition, function calls, a single return statement, and non-negative integer literals. See [the language specification](docs/OCL_LANGUAGE_SPEC.md) and [architecture overview](docs/ARCHITECTURE.md).
+Prototype 0.3 supports `i32` function parameters, function calls, immutable typed local bindings, `+`, `-`, `*`, parenthesized expressions, conventional arithmetic precedence, one final return statement, and non-negative integer literals. See [the language specification](docs/OCL_LANGUAGE_SPEC.md) and [architecture overview](docs/ARCHITECTURE.md).
 
-There is intentionally no variables, control flow, subtraction, parenthesized expressions, `.oxr`/`.ofx` generation, custom linker, stabilized OCL ABI, ownership model, package manager, or standard library yet. Native builds use the host format until the canonical Orbit executable specification is supplied.
+There is intentionally no mutation, reassignment, type inference, unary minus, division, control flow, global storage, `.oxr`/`.ofx` generation, custom linker, stabilized OCL ABI, ownership model, package manager, or standard library yet. Native builds use the host format until the canonical Orbit executable specification is supplied.
 
 Windows executables are linked without the MSVC C runtime and enter directly at
-`main`, which avoids an unnecessary Visual Studio dependency. This holds for 0.2's
-parameters and OCL-to-OCL calls, and the conditions that would invalidate it —
+`main`, which avoids an unnecessary Visual Studio dependency. This holds for
+0.3's parameters, OCL-to-OCL calls, immutable locals, and arithmetic, and the
+conditions that would invalidate it —
 frames larger than a page, static initializers, any C runtime or system-library
 call, or a need for `argc`/`argv` — are listed in
 [the architecture overview](docs/ARCHITECTURE.md). A proper runtime entry point
 and C ABI linking strategy must be designed before any of those appear.
 The Windows-only linker flags assume Clang's PE/COFF-compatible linker interface;
 they do not select or stabilize a target triple. Clang selects the native host
-target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.2 claim.
+target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.3 claim.
