@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 - Unreleased
+## 0.8.0 - 2026-08-28
 
 - Added top-level named structures with `i32` and `bool` fields.
 - Added named-field structure literals, field reads, and mutable field assignment.
