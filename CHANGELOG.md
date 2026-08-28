@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0 - Unreleased
+## 0.6.0 - 2026-08-28
 
 - Added nearest-loop `break;` and `continue;` with unreachable-statement and outside-loop diagnostics.
 - Added unary integer negation, signed division, and signed remainder, including the `i32` minimum literal.
