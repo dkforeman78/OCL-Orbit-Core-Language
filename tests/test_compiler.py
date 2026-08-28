@@ -87,7 +87,9 @@ if os.name == "nt":
     def _exit_signature(code: int) -> int:
         return code & 0xFFFFFFFF
 else:
-    _TRAP_EXITS = {-signal.SIGILL, -signal.SIGABRT}
+    # LLVM lowers llvm.trap to SIGTRAP on macOS and commonly SIGILL (or an
+    # abort fallback) elsewhere. Raw integer division faults remain SIGFPE.
+    _TRAP_EXITS = {-signal.SIGTRAP, -signal.SIGILL, -signal.SIGABRT}
     _UB_FAULTS = {-signal.SIGFPE: "arithmetic fault"}
     def _exit_signature(code: int) -> int:
         return code
