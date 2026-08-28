@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 - Unreleased
+
+- Added top-level named structures with `i32` and `bool` fields.
+- Added named-field structure literals, field reads, and mutable field assignment.
+- Added declaration-order-independent type resolution and diagnostics for duplicate structures, invalid declarations, and incomplete or invalid literals.
+- Added backward-compatible structured internal type objects for scalars, arrays, and named structures.
+- Added named LLVM structure lowering with entry-block local storage while leaving layout and aggregate ABI semantics provisional.
+- Added the `structures.ocl` native acceptance program.
+
 ## 0.7.0 - 2026-08-28
 
 - Added local fixed-size `[T; N]` arrays of `i32` and `bool`, array literals, indexing, and mutable element assignment.

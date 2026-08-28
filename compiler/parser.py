@@ -14,6 +14,8 @@ from .nodes import (
     Function,
     IdentifierExpression,
     IfExpression,
+    FieldAssignmentStatement,
+    FieldExpression,
     IndexAssignmentStatement,
     IndexExpression,
     IntegerLiteral,
@@ -23,12 +25,17 @@ from .nodes import (
     ReturnStatement,
     Statement,
     UnaryExpression,
+    StructDeclaration,
+    StructField,
+    StructLiteral,
+    StructLiteralField,
     VarStatement,
     WhileStatement,
 )
 from .diagnostics import DiagnosticError
 from .lexer import Token, TokenKind
 from .stack import RECURSION_LIMIT_LOCK, reserved
+from .types import ArrayType, ScalarType, StructType, TypeRef
 
 _MAX_I32_DIGITS = len(str(I32_MAX))
 
@@ -71,9 +78,28 @@ class Parser:
 
     def parse(self) -> Program:
         functions: list[Function] = []
+        structures: list[StructDeclaration] = []
         while not self._at(TokenKind.EOF):
-            functions.append(self._function())
-        return Program(tuple(functions))
+            if self._at(TokenKind.STRUCT):
+                structures.append(self._struct_declaration())
+            else:
+                functions.append(self._function())
+        return Program(tuple(functions), tuple(structures))
+
+    def _struct_declaration(self) -> StructDeclaration:
+        start = self._expect(TokenKind.STRUCT, "expected 'struct'")
+        name = self._expect(TokenKind.IDENTIFIER, "expected structure name")
+        self._expect(TokenKind.LEFT_BRACE, "expected '{' after structure name")
+        fields: list[StructField] = []
+        while not self._at(TokenKind.RIGHT_BRACE) and not self._at(TokenKind.EOF):
+            field = self._expect(TokenKind.IDENTIFIER, "expected field name")
+            self._expect(TokenKind.COLON, "expected ':' after field name")
+            type_name = self._expect(TokenKind.IDENTIFIER, "expected field type")
+            fields.append(StructField(field.lexeme, ScalarType(type_name.lexeme), field.location))
+            if not self._match(TokenKind.COMMA):
+                break
+        self._expect(TokenKind.RIGHT_BRACE, "expected '}' after structure fields")
+        return StructDeclaration(name.lexeme, tuple(fields), start.location)
 
     def _function(self) -> Function:
         start = self._expect(TokenKind.FN, "expected 'fn' to begin a function")
@@ -84,14 +110,14 @@ class Parser:
         self._expect(TokenKind.ARROW, "expected '->' before return type")
         return_type = self._expect(TokenKind.IDENTIFIER, "expected return type")
         body = self._block("expected '{' to begin function body")
-        return Function(name.lexeme, return_type.lexeme, body.statements, start.location, tuple(parameters))
+        return Function(name.lexeme, ScalarType(return_type.lexeme), body.statements, start.location, tuple(parameters))
 
     def _block(self, message: str = "expected '{' to begin block") -> BlockStatement:
         start = self._expect(TokenKind.LEFT_BRACE, message)
         self.block_depth += 1
         if self.block_depth > MAX_BLOCK_DEPTH:
             self.block_depth -= 1
-            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.7 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
+            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.8 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
         try:
             statements: list[Statement] = []
             while not self._at(TokenKind.RIGHT_BRACE) and not self._at(TokenKind.EOF):
@@ -120,13 +146,18 @@ class Parser:
         if self._at(TokenKind.LEFT_BRACE):
             return self._block()
         name = self._expect(TokenKind.IDENTIFIER, "expected statement")
+        field_name = None
+        if self._match(TokenKind.DOT):
+            field_name = self._expect(TokenKind.IDENTIFIER, "expected field name after '.'")
         index = None
-        if self._match(TokenKind.LEFT_BRACKET):
+        if field_name is None and self._match(TokenKind.LEFT_BRACKET):
             index = self._expression()
             self._expect(TokenKind.RIGHT_BRACKET, "expected ']' after array index")
         self._expect(TokenKind.EQUAL, "expected '=' in assignment")
         expression = self._expression()
         self._expect(TokenKind.SEMICOLON, "expected ';' after assignment")
+        if field_name is not None:
+            return FieldAssignmentStatement(name.lexeme, field_name.lexeme, expression, name.location)
         if index is not None:
             return IndexAssignmentStatement(name.lexeme, index, expression, name.location)
         return AssignmentStatement(name.lexeme, expression, name.location)
@@ -146,9 +177,10 @@ class Parser:
         binding = VarStatement if mutable else LetStatement
         return binding(name.lexeme, type_name, initializer, name.location)
 
-    def _type_name(self, message: str) -> str:
+    def _type_name(self, message: str) -> TypeRef:
         if not self._match(TokenKind.LEFT_BRACKET):
-            return self._expect(TokenKind.IDENTIFIER, message).lexeme
+            name = self._expect(TokenKind.IDENTIFIER, message).lexeme
+            return ScalarType(name) if name in ("i32", "bool") else StructType(name)
         element = self._expect(TokenKind.IDENTIFIER, "expected array element type")
         self._expect(TokenKind.SEMICOLON, "expected ';' before array length")
         length = self._expect(TokenKind.INTEGER, "expected array length")
@@ -157,7 +189,7 @@ class Parser:
         # The semantic implementation cap is 256. Avoid feeding an arbitrarily
         # long source numeral to int(), while still routing it to E0219.
         normalized = int(significant) if len(significant) <= 3 else 257
-        return f"[{element.lexeme}; {normalized}]"
+        return ArrayType(ScalarType(element.lexeme), normalized)
 
     def _parameters(self) -> list[Parameter]:
         parameters: list[Parameter] = []
@@ -167,7 +199,7 @@ class Parser:
             name = self._expect(TokenKind.IDENTIFIER, "expected parameter name")
             self._expect(TokenKind.COLON, "expected ':' after parameter name")
             type_name = self._expect(TokenKind.IDENTIFIER, "expected parameter type")
-            parameters.append(Parameter(name.lexeme, type_name.lexeme, name.location))
+            parameters.append(Parameter(name.lexeme, ScalarType(type_name.lexeme), name.location))
             if not self._match(TokenKind.COMMA):
                 return parameters
             if self._at(TokenKind.RIGHT_PAREN):
@@ -184,7 +216,7 @@ class Parser:
         if self.depth > MAX_EXPRESSION_DEPTH:
             raise DiagnosticError(
                 "E0101",
-                f"expression is nested too deeply; OCL 0.7 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                f"expression is nested too deeply; OCL 0.8 allows at most {MAX_EXPRESSION_DEPTH} levels",
                 self.source,
                 self.tokens[self.current].location,
             )
@@ -244,7 +276,7 @@ class Parser:
                 self.depth -= 1
                 raise DiagnosticError(
                     "E0101",
-                    f"expression is nested too deeply; OCL 0.7 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                    f"expression is nested too deeply; OCL 0.8 allows at most {MAX_EXPRESSION_DEPTH} levels",
                     self.source,
                     operator.location,
                 )
@@ -259,11 +291,19 @@ class Parser:
             finally:
                 self.depth -= 1
         expression = self._primary()
-        while self._match(TokenKind.LEFT_BRACKET):
-            start = self.tokens[self.current - 1]
-            index = self._expression()
-            self._expect(TokenKind.RIGHT_BRACKET, "expected ']' after array index")
-            expression = IndexExpression(expression, index, start.location)
+        while True:
+            if self._match(TokenKind.LEFT_BRACKET):
+                start = self.tokens[self.current - 1]
+                index = self._expression()
+                self._expect(TokenKind.RIGHT_BRACKET, "expected ']' after array index")
+                expression = IndexExpression(expression, index, start.location)
+                continue
+            if self._match(TokenKind.DOT):
+                start = self.tokens[self.current - 1]
+                field = self._expect(TokenKind.IDENTIFIER, "expected field name after '.'")
+                expression = FieldExpression(expression, field.lexeme, start.location)
+                continue
+            break
         return expression
 
     def _primary(self) -> Expression:
@@ -288,6 +328,25 @@ class Parser:
             return ArrayLiteral(tuple(elements), start.location)
         if self._at(TokenKind.IDENTIFIER):
             name = self._expect(TokenKind.IDENTIFIER, "expected identifier")
+            # A named-field literal is distinguishable from the block that
+            # follows an `if`/`while` condition by its `field:` prefix.
+            if (self._at(TokenKind.LEFT_BRACE)
+                    and self.current + 2 < len(self.tokens)
+                    and self.tokens[self.current + 1].kind is TokenKind.IDENTIFIER
+                    and self.tokens[self.current + 2].kind is TokenKind.COLON):
+                self.current += 1
+                fields: list[StructLiteralField] = []
+                if not self._at(TokenKind.RIGHT_BRACE):
+                    while True:
+                        field = self._expect(TokenKind.IDENTIFIER, "expected field name in structure literal")
+                        self._expect(TokenKind.COLON, "expected ':' after structure literal field")
+                        fields.append(StructLiteralField(field.lexeme, self._expression(), field.location))
+                        if not self._match(TokenKind.COMMA):
+                            break
+                        if self._at(TokenKind.RIGHT_BRACE):
+                            break
+                self._expect(TokenKind.RIGHT_BRACE, "expected '}' after structure literal")
+                return StructLiteral(StructType(name.lexeme), tuple(fields), name.location)
             if not self._match(TokenKind.LEFT_PAREN):
                 return IdentifierExpression(name.lexeme, name.location)
             arguments: list[Expression] = []

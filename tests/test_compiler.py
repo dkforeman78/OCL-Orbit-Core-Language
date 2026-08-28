@@ -20,6 +20,7 @@ from compiler.lexer import lex
 from compiler.parser import parse
 from compiler.nodes import AssignmentStatement, BinaryExpression, BlockStatement, BooleanLiteral, BreakStatement, CallExpression, ContinueStatement, Function, IdentifierExpression, IfExpression, IntegerLiteral, LetStatement, Program, ReturnStatement, UnaryExpression, VarStatement, WhileStatement
 from compiler.semantic import analyze
+from compiler.types import ArrayType, ScalarType, StructType
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "tools"))
 import check_clang_version  # noqa: E402
@@ -1004,6 +1005,157 @@ class Ocl07Tests(DiagnosticAssertions):
     def test_whole_array_assignment_and_equality_are_not_supported(self):
         self.assertDiagnostic("fn main() -> i32 { var a: [i32; 1] = [1]; a = [2]; return 42; }", "E0223", "whole-array")
         self.assertDiagnostic("fn main() -> i32 { let a: [i32; 1] = [1]; return if a == a { 42 } else { 0 }; }", "E0211", "does not support arrays")
+
+
+class Ocl08Tests(DiagnosticAssertions):
+    SOURCE = (
+        "fn main() -> i32 { var point: Point = Point { y: 22, x: 20 }; "
+        "point.x = point.x + 1; return point.x + point.y - 1; } "
+        "struct Point { x: i32, y: i32 }"
+    )
+
+    def _build_and_run(self, source: str, name: str = "structure") -> int:
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / f"{name}.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / (f"{name}.exe" if os.name == "nt" else name)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return run_executable(executable, timeout=10)
+
+    def test_structure_declared_after_use_runs_natively(self):
+        self.assertEqual(self._build_and_run(self.SOURCE), 42)
+
+    def test_parsed_types_have_structured_internal_identity(self):
+        program, _ = compile_source(
+            "struct A { x: i32 } fn main() -> i32 { let a: A = A { x: 1 }; "
+            "let values: [i32; 1] = [42]; return a.x + values[0] - 1; }"
+        )
+        self.assertIsInstance(program.functions[0].return_type, ScalarType)
+        self.assertIsInstance(program.functions[0].body[0].type_name, StructType)
+        self.assertIsInstance(program.functions[0].body[1].type_name, ArrayType)
+
+    def test_named_type_and_field_geps_are_emitted(self):
+        _, ir = compile_source(self.SOURCE)
+        self.assertIn("%ocl.struct.Point = type { i32, i32 }", ir)
+        self.assertIn("%ocl.var.point = alloca %ocl.struct.Point", ir)
+        self.assertIn("i32 0, i32 0", ir)
+        self.assertIn("i32 0, i32 1", ir)
+
+    def test_boolean_fields_are_supported(self):
+        self.assertEqual(self._build_and_run(
+            "struct Flag { enabled: bool } fn main() -> i32 { "
+            "let f: Flag = Flag { enabled: true }; return if f.enabled { 42 } else { 0 }; }",
+            "boolfield"), 42)
+
+    def test_literal_field_expressions_run_left_to_right_in_source_order(self):
+        _, ir = compile_source(
+            "struct Pair { first: i32, second: i32 } "
+            "fn a(x: i32) -> i32 { return x; } fn b(x: i32) -> i32 { return x; } "
+            "fn main() -> i32 { let p: Pair = Pair { second: b(22), first: a(20) }; "
+            "return p.first + p.second; }"
+        )
+        calls = [line.strip().split("@")[1].split("(")[0]
+                 for line in ir.splitlines() if "call i32 @" in line]
+        self.assertEqual(calls, ["b", "a"])
+        self.assertEqual(self._build_and_run(
+            "struct Pair { first: i32, second: i32 } fn main() -> i32 { "
+            "let p: Pair = Pair { second: 22, first: 20 }; return p.first - p.second + 44; }",
+            "fieldorder"), 42)
+
+    def test_assignment_uses_the_declared_field_index(self):
+        self.assertEqual(self._build_and_run(
+            "struct Pair { first: i32, second: i32 } fn main() -> i32 { "
+            "var p: Pair = Pair { first: 20, second: 0 }; p.second = 22; "
+            "return p.first + p.second; }", "fieldwrite"), 42)
+
+    def test_nested_block_structure_storage_is_in_entry(self):
+        _, ir = compile_source(
+            "struct Box { value: i32 } fn main() -> i32 { { "
+            "let b: Box = Box { value: 42 }; return b.value; } }"
+        )
+        entry = ir.index("ocl.entry:")
+        allocation = ir.index("%ocl.var.b = alloca %ocl.struct.Box")
+        self.assertGreater(allocation, entry)
+
+    def test_structure_declaration_rules(self):
+        self.assertDiagnostic(
+            "struct A { x: i32 } struct A { y: i32 } fn main() -> i32 { return 42; }",
+            "E0225", "duplicate structure")
+        self.assertDiagnostic("struct Empty {} fn main() -> i32 { return 42; }", "E0226", "at least one")
+        fields = ", ".join(f"f{i}: i32" for i in range(65))
+        self.assertDiagnostic(f"struct Huge {{ {fields} }} fn main() -> i32 {{ return 42; }}", "E0226", "more than 64")
+        self.assertDiagnostic(
+            "struct A { x: i32, x: bool } fn main() -> i32 { return 42; }",
+            "E0226", "duplicate field")
+        self.assertDiagnostic(
+            "struct A { x: i64 } fn main() -> i32 { return 42; }",
+            "E0200", "unknown type")
+
+    def test_structure_literal_requires_the_exact_field_set(self):
+        prefix = "struct Pair { x: i32, y: bool } fn main() -> i32 { "
+        self.assertDiagnostic(prefix + "let p: Pair = Pair { x: 42 }; return 42; }", "E0228", "missing initializer")
+        self.assertDiagnostic(prefix + "let p: Pair = Pair { x: 1, x: 2, y: true }; return 42; }", "E0228", "duplicate initializer")
+        self.assertDiagnostic(prefix + "let p: Pair = Pair { x: 1, y: true, z: 2 }; return 42; }", "E0229", "no field 'z'")
+        self.assertDiagnostic(prefix + "let p: Pair = Pair { x: true, y: false }; return 42; }", "E0214", "field 'x' expects i32")
+        self.assertDiagnostic("fn main() -> i32 { let p: Missing = Missing { x: 1 }; return 42; }", "E0200", "unknown type")
+
+    def test_field_reads_and_writes_are_strict(self):
+        self.assertDiagnostic("fn main() -> i32 { var x: i32 = 1; x.value = 2; return 42; }", "E0230", "not a structure")
+        self.assertDiagnostic(
+            "struct A { x: i32 } fn main() -> i32 { let a: A = A { x: 1 }; a.x = 2; return 42; }",
+            "E0215", "immutable")
+        self.assertDiagnostic(
+            "struct A { x: i32 } fn main() -> i32 { var a: A = A { x: 1 }; a.x = true; return 42; }",
+            "E0214", "expects i32")
+        self.assertDiagnostic(
+            "struct A { x: i32 } fn main() -> i32 { let a: A = A { x: 1 }; return a.y; }",
+            "E0229", "no field 'y'")
+        self.assertDiagnostic("fn main() -> i32 { let x: i32 = 1; return x.value; }", "E0230", "not a structure")
+
+    def test_whole_structure_values_and_aggregate_abi_are_deferred(self):
+        self.assertDiagnostic(
+            "struct A { x: i32 } fn main() -> i32 { let a: A = A { x: 1 }; let b: A = a; return 42; }",
+            "E0231", "named-field literal")
+        self.assertDiagnostic(
+            "struct A { x: i32 } fn main() -> i32 { var a: A = A { x: 1 }; a = A { x: 2 }; return 42; }",
+            "E0231", "whole-structure")
+        self.assertDiagnostic(
+            "struct A { x: i32 } fn f(a: A) -> i32 { return 42; } fn main() -> i32 { return 42; }",
+            "E0200", "unknown type")
+        self.assertDiagnostic(
+            "struct A { x: i32 } fn f() -> A { return A { x: 1 }; } fn main() -> i32 { return 42; }",
+            "E0200", "unknown type")
+        self.assertDiagnostic(
+            "struct A { x: i32 } fn main() -> i32 { let a: A = A { x: 1 }; "
+            "return if a == a { 42 } else { 0 }; }",
+            "E0211", "does not support structures")
+        self.assertDiagnostic(
+            "struct A { x: i32 } fn main() -> i32 { "
+            "return if true { A { x: 1 } } else { A { x: 2 } }; }",
+            "E0231", "structure-valued if")
+
+    def test_total_structure_storage_uses_padded_sizes(self):
+        fields = ", ".join(f"f{i}: i32" for i in range(64))
+        literal = ", ".join(f"f{i}: {i}" for i in range(64))
+        declarations = " ".join(f"let s{i}: Large = Large {{ {literal} }};" for i in range(9))
+        self.assertDiagnostic(
+            f"struct Large {{ {fields} }} fn main() -> i32 {{ {declarations} return 42; }}",
+            "E0219", "at most 2048",
+        )
+        # `{ i1, i32 }` occupies 8 bytes under the verified LLVM data layout,
+        # not the naive sum of 5. This crosses the cap only when padding counts.
+        declarations = " ".join(
+            f"let p{i}: Padded = Padded {{ flag: true, value: {i} }};" for i in range(257)
+        )
+        self.assertDiagnostic(
+            f"struct Padded {{ flag: bool, value: i32 }} fn main() -> i32 {{ {declarations} return 42; }}",
+            "E0219", "at most 2048",
+        )
 
 
 class DiagnosticRenderingTests(unittest.TestCase):

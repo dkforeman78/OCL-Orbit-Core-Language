@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .diagnostics import SourceLocation
+from .types import TypeRef
 
-# The only integer type in OCL 0.7. Both the parser and the semantic analyzer
+# The only integer type in OCL 0.8. Both the parser and the semantic analyzer
 # bound literals against this, so it lives here rather than in either of them.
 I32_MAX = 2_147_483_647
 
@@ -70,7 +71,28 @@ class IndexExpression:
     location: SourceLocation
 
 
-Expression = BooleanLiteral | IntegerLiteral | IdentifierExpression | BinaryExpression | CallExpression | IfExpression | UnaryExpression | ArrayLiteral | IndexExpression
+@dataclass(frozen=True)
+class StructLiteralField:
+    name: str
+    expression: Expression
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class StructLiteral:
+    type_name: TypeRef
+    fields: tuple[StructLiteralField, ...]
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class FieldExpression:
+    base: Expression
+    field: str
+    location: SourceLocation
+
+
+Expression = BooleanLiteral | IntegerLiteral | IdentifierExpression | BinaryExpression | CallExpression | IfExpression | UnaryExpression | ArrayLiteral | IndexExpression | StructLiteral | FieldExpression
 
 
 @dataclass(frozen=True)
@@ -111,6 +133,14 @@ class IndexAssignmentStatement:
 
 
 @dataclass(frozen=True)
+class FieldAssignmentStatement:
+    name: str
+    field: str
+    expression: Expression
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
 class BlockStatement:
     statements: tuple[Statement, ...]
     location: SourceLocation
@@ -133,13 +163,27 @@ class ContinueStatement:
     location: SourceLocation
 
 
-Statement = LetStatement | VarStatement | AssignmentStatement | IndexAssignmentStatement | BlockStatement | WhileStatement | BreakStatement | ContinueStatement | ReturnStatement
+Statement = LetStatement | VarStatement | AssignmentStatement | IndexAssignmentStatement | FieldAssignmentStatement | BlockStatement | WhileStatement | BreakStatement | ContinueStatement | ReturnStatement
 
 
 @dataclass(frozen=True)
 class Parameter:
     name: str
     type_name: str
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class StructField:
+    name: str
+    type_name: TypeRef
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class StructDeclaration:
+    name: str
+    fields: tuple[StructField, ...]
     location: SourceLocation
 
 
@@ -155,3 +199,4 @@ class Function:
 @dataclass(frozen=True)
 class Program:
     functions: tuple[Function, ...]
+    structures: tuple[StructDeclaration, ...] = ()

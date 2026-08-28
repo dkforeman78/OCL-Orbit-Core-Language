@@ -15,6 +15,7 @@ class TokenKind(Enum):
     WHILE = auto()
     BREAK = auto()
     CONTINUE = auto()
+    STRUCT = auto()
     RETURN = auto()
     TRUE = auto()
     FALSE = auto()
@@ -45,6 +46,7 @@ class TokenKind(Enum):
     GREATER = auto()
     GREATER_EQUAL = auto()
     SEMICOLON = auto()
+    DOT = auto()
     EOF = auto()
 
 
@@ -111,6 +113,7 @@ def lex(source: str) -> list[Token]:
             ">": TokenKind.GREATER,
             "!": TokenKind.BANG,
             ";": TokenKind.SEMICOLON,
+            ".": TokenKind.DOT,
         }
         if char in single:
             tokens.append(Token(single[char], char, start))
@@ -125,6 +128,7 @@ def lex(source: str) -> list[Token]:
             kind = {
                 "break": TokenKind.BREAK,
                 "continue": TokenKind.CONTINUE,
+                "struct": TokenKind.STRUCT,
                 "else": TokenKind.ELSE,
                 "false": TokenKind.FALSE,
                 "fn": TokenKind.FN,
