@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from .diagnostics import SourceLocation
 
-# The only integer type in OCL 0.6. Both the parser and the semantic analyzer
+# The only integer type in OCL 0.7. Both the parser and the semantic analyzer
 # bound literals against this, so it lives here rather than in either of them.
 I32_MAX = 2_147_483_647
 
@@ -57,7 +57,20 @@ class UnaryExpression:
     location: SourceLocation
 
 
-Expression = BooleanLiteral | IntegerLiteral | IdentifierExpression | BinaryExpression | CallExpression | IfExpression | UnaryExpression
+@dataclass(frozen=True)
+class ArrayLiteral:
+    elements: tuple[Expression, ...]
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class IndexExpression:
+    base: Expression
+    index: Expression
+    location: SourceLocation
+
+
+Expression = BooleanLiteral | IntegerLiteral | IdentifierExpression | BinaryExpression | CallExpression | IfExpression | UnaryExpression | ArrayLiteral | IndexExpression
 
 
 @dataclass(frozen=True)
@@ -90,6 +103,14 @@ class AssignmentStatement:
 
 
 @dataclass(frozen=True)
+class IndexAssignmentStatement:
+    name: str
+    index: Expression
+    expression: Expression
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
 class BlockStatement:
     statements: tuple[Statement, ...]
     location: SourceLocation
@@ -112,7 +133,7 @@ class ContinueStatement:
     location: SourceLocation
 
 
-Statement = LetStatement | VarStatement | AssignmentStatement | BlockStatement | WhileStatement | BreakStatement | ContinueStatement | ReturnStatement
+Statement = LetStatement | VarStatement | AssignmentStatement | IndexAssignmentStatement | BlockStatement | WhileStatement | BreakStatement | ContinueStatement | ReturnStatement
 
 
 @dataclass(frozen=True)

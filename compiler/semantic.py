@@ -6,6 +6,7 @@ from .stack import reserved
 from .nodes import (
     BinaryExpression,
     AssignmentStatement,
+    ArrayLiteral,
     BlockStatement,
     BreakStatement,
     BooleanLiteral,
@@ -15,6 +16,8 @@ from .nodes import (
     I32_MAX,
     IdentifierExpression,
     IfExpression,
+    IndexAssignmentStatement,
+    IndexExpression,
     IntegerLiteral,
     LetStatement,
     Program,
@@ -29,11 +32,32 @@ ARITHMETIC_OPERATORS = frozenset(("+", "-", "*", "/", "%"))
 RELATIONAL_OPERATORS = frozenset(("<", "<=", ">", ">="))
 EQUALITY_OPERATORS = frozenset(("==", "!="))
 LOGICAL_OPERATORS = frozenset(("&&", "||"))
+MAX_LOCAL_ARRAY_BYTES = 2_048
 
 
-def _require_known_type(type_name: str, source: str, location: SourceLocation) -> None:
-    if type_name not in SUPPORTED_TYPES:
-        raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.6 supports i32 and bool", source, location)
+def _array_type(type_name: str) -> tuple[str, int] | None:
+    if not (type_name.startswith("[") and type_name.endswith("]") and ";" in type_name):
+        return None
+    element, length = type_name[1:-1].split(";", 1)
+    try:
+        return element.strip(), int(length.strip())
+    except ValueError:
+        return None
+
+
+def _require_known_type(type_name: str, source: str, location: SourceLocation, *, arrays: bool = False) -> None:
+    if type_name in SUPPORTED_TYPES:
+        return
+    array = _array_type(type_name)
+    if arrays and array and array[0] in SUPPORTED_TYPES and 1 <= array[1] <= 256:
+        return
+    if arrays and array and array[0] not in SUPPORTED_TYPES:
+        raise DiagnosticError("E0200", f"unknown array element type '{array[0]}'", source, location)
+    if arrays and array and array[1] <= 0:
+        raise DiagnosticError("E0219", "array length must be greater than zero", source, location)
+    if arrays and array and array[1] > 256:
+        raise DiagnosticError("E0219", "Prototype 0.7 arrays may contain at most 256 elements", source, location)
+    raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.7 supports i32, bool, and local fixed-size arrays", source, location)
 
 
 def analyze(program: Program, source: str) -> None:
@@ -72,11 +96,35 @@ def _analyze(program: Program, source: str) -> None:
         raise DiagnosticError("E0214", "main function must return i32", source, functions["main"].location)
 
     for function in program.functions:
+        array_bytes = _local_array_bytes(function.body)
+        if array_bytes > MAX_LOCAL_ARRAY_BYTES:
+            raise DiagnosticError(
+                "E0219",
+                f"function '{function.name}' declares {array_bytes} bytes of arrays; Prototype 0.7 allows at most {MAX_LOCAL_ARRAY_BYTES}",
+                source,
+                function.location,
+            )
         parameter_names = {parameter.name for parameter in function.parameters}
         scope = {parameter.name: (parameter.type_name, False) for parameter in function.parameters}
         declared = set(parameter_names)
         if _analyze_statements(function.body, scope, declared, functions, function, source) != "return":
             raise DiagnosticError("E0202", f"function '{function.name}' can reach the end without returning", source, function.location)
+
+
+def _local_array_bytes(statements) -> int:
+    total = 0
+    pending = list(reversed(statements))
+    while pending:
+        statement = pending.pop()
+        if isinstance(statement, (LetStatement, VarStatement)):
+            array = _array_type(statement.type_name)
+            if array:
+                total += array[1] * (4 if array[0] == "i32" else 1)
+        elif isinstance(statement, BlockStatement):
+            pending.extend(reversed(statement.statements))
+        elif isinstance(statement, WhileStatement):
+            pending.extend(reversed(statement.body.statements))
+    return total
 
 
 def _analyze_statements(statements, scope, declared, functions, function, source, loop_depth=0):
@@ -85,9 +133,11 @@ def _analyze_statements(statements, scope, declared, functions, function, source
         if flow:
             raise DiagnosticError("E0216", f"unreachable statement after {flow}", source, statement.location)
         if isinstance(statement, (LetStatement, VarStatement)):
-            _require_known_type(statement.type_name, source, statement.location)
+            _require_known_type(statement.type_name, source, statement.location, arrays=True)
             if statement.name in declared:
-                raise DiagnosticError("E0210", f"name '{statement.name}' is already declared in this function; OCL 0.6 has no shadowing", source, statement.location)
+                raise DiagnosticError("E0210", f"name '{statement.name}' is already declared in this function; OCL 0.7 has no shadowing", source, statement.location)
+            if _array_type(statement.type_name) and not isinstance(statement.initializer, ArrayLiteral):
+                raise DiagnosticError("E0223", "array initializer must be an array literal in OCL 0.7", source, statement.initializer.location)
             actual = _analyze_expression(statement.initializer, scope, functions, source)
             if actual != statement.type_name:
                 raise DiagnosticError("E0214", f"local '{statement.name}' expects {statement.type_name}, got {actual}", source, statement.location)
@@ -99,9 +149,28 @@ def _analyze_statements(statements, scope, declared, functions, function, source
             expected, mutable = scope[statement.name]
             if not mutable:
                 raise DiagnosticError("E0215", f"cannot assign to immutable binding '{statement.name}'", source, statement.location)
+            if _array_type(expected):
+                raise DiagnosticError("E0223", "whole-array assignment is not supported in OCL 0.7", source, statement.location)
             actual = _analyze_expression(statement.expression, scope, functions, source)
             if actual != expected:
                 raise DiagnosticError("E0214", f"assignment to '{statement.name}' expects {expected}, got {actual}", source, statement.location)
+        elif isinstance(statement, IndexAssignmentStatement):
+            if statement.name not in scope:
+                raise DiagnosticError("E0206", f"unknown identifier '{statement.name}'", source, statement.location)
+            expected, mutable = scope[statement.name]
+            array = _array_type(expected)
+            if array is None:
+                raise DiagnosticError("E0220", f"'{statement.name}' is not an array", source, statement.location)
+            if not mutable:
+                raise DiagnosticError("E0215", f"cannot assign through immutable binding '{statement.name}'", source, statement.location)
+            index_type = _analyze_expression(statement.index, scope, functions, source)
+            if index_type != "i32":
+                raise DiagnosticError("E0221", f"array index must be i32, got {index_type}", source, statement.index.location)
+            if isinstance(statement.index, IntegerLiteral) and not 0 <= statement.index.value < array[1]:
+                raise DiagnosticError("E0222", f"array index {statement.index.value} is outside length {array[1]}", source, statement.index.location)
+            actual = _analyze_expression(statement.expression, scope, functions, source)
+            if actual != array[0]:
+                raise DiagnosticError("E0214", f"array element expects {array[0]}, got {actual}", source, statement.expression.location)
         elif isinstance(statement, ReturnStatement):
             actual = _analyze_expression(statement.expression, scope, functions, source)
             if actual != function.return_type:
@@ -132,6 +201,10 @@ def _operands(expression: Expression) -> tuple[Expression, ...]:
         return (expression.condition, expression.then_expression, expression.else_expression)
     if isinstance(expression, UnaryExpression):
         return (expression.operand,)
+    if isinstance(expression, ArrayLiteral):
+        return expression.elements
+    if isinstance(expression, IndexExpression):
+        return (expression.base, expression.index)
     return ()
 
 
@@ -156,7 +229,7 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
                 except KeyError as error:
                     raise DiagnosticError("E0206", f"unknown identifier '{node.name}'", source, node.location) from error
                 continue
-            if not isinstance(node, (BinaryExpression, CallExpression, IfExpression, UnaryExpression)):
+            if not isinstance(node, (BinaryExpression, CallExpression, IfExpression, UnaryExpression, ArrayLiteral, IndexExpression)):
                 raise InternalCompilerError(f"unsupported expression node: {type(node).__name__}")
             pending.append((node, True))
             pending.extend((operand, False) for operand in reversed(_operands(node)))
@@ -176,6 +249,8 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
                     raise DiagnosticError("E0211", f"operator '{node.operator}' requires i32 operands, got {left} and {right}", source, node.location)
                 types[id(node)] = "bool"
             elif node.operator in EQUALITY_OPERATORS:
+                if _array_type(left) or _array_type(right):
+                    raise DiagnosticError("E0211", f"operator '{node.operator}' does not support arrays in OCL 0.7", source, node.location)
                 if left != right:
                     raise DiagnosticError("E0211", f"operator '{node.operator}' requires matching operand types, got {left} and {right}", source, node.location)
                 types[id(node)] = "bool"
@@ -204,6 +279,8 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
                 raise DiagnosticError("E0212", f"if condition must be bool, got {condition}", source, node.condition.location)
             if then_type != else_type:
                 raise DiagnosticError("E0213", f"if branches must have the same type, got {then_type} and {else_type}", source, node.location)
+            if _array_type(then_type):
+                raise DiagnosticError("E0223", "array-valued if expressions are not supported in OCL 0.7", source, node.location)
             types[id(node)] = then_type
         elif isinstance(node, UnaryExpression):
             operand = types[id(node.operand)]
@@ -214,6 +291,26 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
             else:
                 requirement = "bool" if node.operator == "!" else "i32"
                 raise DiagnosticError("E0211", f"operator '{node.operator}' requires a {requirement} operand, got {operand}", source, node.location)
+        elif isinstance(node, ArrayLiteral):
+            if not node.elements:
+                raise DiagnosticError("E0224", "array literal must contain at least one element", source, node.location)
+            element_types = [types[id(element)] for element in node.elements]
+            if element_types[0] not in SUPPORTED_TYPES or any(item != element_types[0] for item in element_types[1:]):
+                raise DiagnosticError("E0214", "array literal elements must have one scalar type", source, node.location)
+            types[id(node)] = f"[{element_types[0]}; {len(node.elements)}]"
+        elif isinstance(node, IndexExpression):
+            base = types[id(node.base)]
+            index = types[id(node.index)]
+            array = _array_type(base)
+            if array is None:
+                raise DiagnosticError("E0220", "indexed expression is not an array", source, node.location)
+            if not isinstance(node.base, IdentifierExpression):
+                raise DiagnosticError("E0223", "only a local array binding may be indexed in OCL 0.7", source, node.location)
+            if index != "i32":
+                raise DiagnosticError("E0221", f"array index must be i32, got {index}", source, node.index.location)
+            if isinstance(node.index, IntegerLiteral) and not 0 <= node.index.value < array[1]:
+                raise DiagnosticError("E0222", f"array index {node.index.value} is outside length {array[1]}", source, node.index.location)
+            types[id(node)] = array[0]
         else:
             raise InternalCompilerError(f"unsupported expression node: {type(node).__name__}")
     return types[id(expression)]

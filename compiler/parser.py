@@ -3,6 +3,7 @@ from __future__ import annotations
 from .nodes import (
     I32_MAX,
     AssignmentStatement,
+    ArrayLiteral,
     BinaryExpression,
     BlockStatement,
     BreakStatement,
@@ -13,6 +14,8 @@ from .nodes import (
     Function,
     IdentifierExpression,
     IfExpression,
+    IndexAssignmentStatement,
+    IndexExpression,
     IntegerLiteral,
     LetStatement,
     Parameter,
@@ -88,7 +91,7 @@ class Parser:
         self.block_depth += 1
         if self.block_depth > MAX_BLOCK_DEPTH:
             self.block_depth -= 1
-            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.6 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
+            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.7 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
         try:
             statements: list[Statement] = []
             while not self._at(TokenKind.RIGHT_BRACE) and not self._at(TokenKind.EOF):
@@ -117,9 +120,15 @@ class Parser:
         if self._at(TokenKind.LEFT_BRACE):
             return self._block()
         name = self._expect(TokenKind.IDENTIFIER, "expected statement")
+        index = None
+        if self._match(TokenKind.LEFT_BRACKET):
+            index = self._expression()
+            self._expect(TokenKind.RIGHT_BRACKET, "expected ']' after array index")
         self._expect(TokenKind.EQUAL, "expected '=' in assignment")
         expression = self._expression()
         self._expect(TokenKind.SEMICOLON, "expected ';' after assignment")
+        if index is not None:
+            return IndexAssignmentStatement(name.lexeme, index, expression, name.location)
         return AssignmentStatement(name.lexeme, expression, name.location)
 
     def _let_statement(self) -> LetStatement:
@@ -130,12 +139,25 @@ class Parser:
         self._expect(TokenKind.VAR if mutable else TokenKind.LET, f"expected '{keyword}'")
         name = self._expect(TokenKind.IDENTIFIER, f"expected local name after '{keyword}'")
         self._expect(TokenKind.COLON, "expected ':' after local name")
-        type_name = self._expect(TokenKind.IDENTIFIER, "expected local type")
+        type_name = self._type_name("expected local type")
         self._expect(TokenKind.EQUAL, "expected '=' before local initializer")
         initializer = self._expression()
         self._expect(TokenKind.SEMICOLON, "expected ';' after local binding")
         binding = VarStatement if mutable else LetStatement
-        return binding(name.lexeme, type_name.lexeme, initializer, name.location)
+        return binding(name.lexeme, type_name, initializer, name.location)
+
+    def _type_name(self, message: str) -> str:
+        if not self._match(TokenKind.LEFT_BRACKET):
+            return self._expect(TokenKind.IDENTIFIER, message).lexeme
+        element = self._expect(TokenKind.IDENTIFIER, "expected array element type")
+        self._expect(TokenKind.SEMICOLON, "expected ';' before array length")
+        length = self._expect(TokenKind.INTEGER, "expected array length")
+        self._expect(TokenKind.RIGHT_BRACKET, "expected ']' after array type")
+        significant = length.lexeme.lstrip("0") or "0"
+        # The semantic implementation cap is 256. Avoid feeding an arbitrarily
+        # long source numeral to int(), while still routing it to E0219.
+        normalized = int(significant) if len(significant) <= 3 else 257
+        return f"[{element.lexeme}; {normalized}]"
 
     def _parameters(self) -> list[Parameter]:
         parameters: list[Parameter] = []
@@ -162,7 +184,7 @@ class Parser:
         if self.depth > MAX_EXPRESSION_DEPTH:
             raise DiagnosticError(
                 "E0101",
-                f"expression is nested too deeply; OCL 0.6 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                f"expression is nested too deeply; OCL 0.7 allows at most {MAX_EXPRESSION_DEPTH} levels",
                 self.source,
                 self.tokens[self.current].location,
             )
@@ -222,7 +244,7 @@ class Parser:
                 self.depth -= 1
                 raise DiagnosticError(
                     "E0101",
-                    f"expression is nested too deeply; OCL 0.6 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                    f"expression is nested too deeply; OCL 0.7 allows at most {MAX_EXPRESSION_DEPTH} levels",
                     self.source,
                     operator.location,
                 )
@@ -236,7 +258,13 @@ class Parser:
                 return UnaryExpression(operator.lexeme, self._unary(), operator.location)
             finally:
                 self.depth -= 1
-        return self._primary()
+        expression = self._primary()
+        while self._match(TokenKind.LEFT_BRACKET):
+            start = self.tokens[self.current - 1]
+            index = self._expression()
+            self._expect(TokenKind.RIGHT_BRACKET, "expected ']' after array index")
+            expression = IndexExpression(expression, index, start.location)
+        return expression
 
     def _primary(self) -> Expression:
         if self._at(TokenKind.TRUE) or self._at(TokenKind.FALSE):
@@ -246,6 +274,18 @@ class Parser:
         if self._at(TokenKind.INTEGER):
             value = self._expect(TokenKind.INTEGER, "expected integer literal")
             return self._integer(value)
+        if self._match(TokenKind.LEFT_BRACKET):
+            start = self.tokens[self.current - 1]
+            elements: list[Expression] = []
+            if not self._at(TokenKind.RIGHT_BRACKET):
+                while True:
+                    elements.append(self._expression())
+                    if not self._match(TokenKind.COMMA):
+                        break
+                    if self._at(TokenKind.RIGHT_BRACKET):
+                        raise DiagnosticError("E0100", "expected array element after ','", self.source, self.tokens[self.current].location)
+            self._expect(TokenKind.RIGHT_BRACKET, "expected ']' after array literal")
+            return ArrayLiteral(tuple(elements), start.location)
         if self._at(TokenKind.IDENTIFIER):
             name = self._expect(TokenKind.IDENTIFIER, "expected identifier")
             if not self._match(TokenKind.LEFT_PAREN):
