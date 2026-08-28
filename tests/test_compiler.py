@@ -1,6 +1,7 @@
 import contextlib
 import io
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -59,6 +60,45 @@ def run_executable(path, timeout: float = 20.0) -> int:
             f"{Path(path).name} did not terminate within {timeout}s; "
             "control flow lowering probably produced an infinite loop"
         ) from None
+
+
+
+# A deliberate llvm.trap and undefined behaviour that merely happens to fault are
+# both "nonzero exit", so asserting only that cannot tell them apart. They do
+# carry distinct signatures, and the spec promises the deterministic one.
+if os.name == "nt":
+    _TRAP_EXITS = {0xC000001D}                      # STATUS_ILLEGAL_INSTRUCTION
+    _UB_FAULTS = {
+        0xC0000094: "integer divide by zero",
+        0xC0000095: "integer overflow",
+    }
+    def _exit_signature(code: int) -> int:
+        return code & 0xFFFFFFFF
+else:
+    _TRAP_EXITS = {-signal.SIGILL, -signal.SIGABRT}
+    _UB_FAULTS = {-signal.SIGFPE: "arithmetic fault"}
+    def _exit_signature(code: int) -> int:
+        return code
+
+
+def assert_deterministic_trap(case, exit_code: int) -> None:
+    """Assert the program stopped via the documented trap, not via raw UB.
+
+    A defeated guard lets the operands reach `sdiv`/`srem`, and the hardware
+    faults with its own status. That is still a nonzero exit, so a test that
+    only checks "not zero" passes while the trap policy has actually been lost.
+    """
+    signature = _exit_signature(exit_code)
+    if signature in _UB_FAULTS:
+        case.fail(
+            f"program stopped with {_UB_FAULTS[signature]} (0x{signature:08X}), not the "
+            "deterministic trap: the guard did not fire and the operands reached the "
+            "raw division, which is undefined behaviour"
+        )
+    case.assertIn(
+        signature, _TRAP_EXITS,
+        f"expected a deterministic trap, got exit signature 0x{signature:08X}",
+    )
 
 
 class DiagnosticAssertions(unittest.TestCase):
@@ -738,7 +778,66 @@ class Ocl06Tests(DiagnosticAssertions):
                     executable = Path(directory) / ("trap.exe" if os.name == "nt" else "trap")
                     result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)], capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertNotEqual(run_executable(executable, timeout=5), 0)
+                    assert_deterministic_trap(self, run_executable(executable, timeout=5))
+
+    def _build_and_run(self, source: str, name: str = "case") -> int:
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / f"{name}.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / (f"{name}.exe" if os.name == "nt" else name)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return run_executable(executable, timeout=10)
+
+    def test_dividing_by_minus_one_is_not_a_trap(self):
+        # Only i32::MIN / -1 overflows. Widening the overflow test to "either
+        # operand matches" makes every division by -1 trap, which breaks working
+        # arithmetic rather than protecting it.
+        self.assertEqual(
+            self._build_and_run(
+                "fn neg(x: i32) -> i32 { return x; } "
+                "fn main() -> i32 { return (-42) / neg(-1); }", "divneg"), 42)
+        self.assertEqual(
+            self._build_and_run(
+                "fn neg(x: i32) -> i32 { return x; } "
+                "fn main() -> i32 { return 42 + ((-84) % neg(-1)); }", "remneg"), 42)
+
+    def test_minimum_divided_by_one_is_not_a_trap(self):
+        # The guard must key on the pair, not on i32::MIN alone.
+        self.assertEqual(
+            self._build_and_run(
+                "fn id(x: i32) -> i32 { return x; } "
+                "fn main() -> i32 { return ((-2147483648) / id(1)) + 2147483647 + 43; }", "minone"), 42)
+
+    def test_division_inside_a_branch_keeps_the_phi_predecessor(self):
+        # After the guard, the value is produced in the division's safe block,
+        # not in the branch's own block. A phi naming the branch label is IR
+        # LLVM rejects with "PHI node entries do not match predecessors!".
+        _, ir = compile_source(
+            "fn f(a: bool, x: i32, y: i32) -> i32 { return if a { x / y } else { 0 }; } "
+            "fn main() -> i32 { return f(true, 84, 2); }")
+        phi = next(line.strip() for line in ir.splitlines() if "= phi " in line)
+        self.assertIn("%ocl.division.safe.", phi)
+        self.assertNotIn("%ocl.if.then.", phi)
+
+    def test_division_inside_a_branch_runs_natively(self):
+        self.assertEqual(
+            self._build_and_run(
+                "fn f(a: bool, x: i32, y: i32) -> i32 { return if a { x / y } else { 0 }; } "
+                "fn main() -> i32 { return f(true, 84, 2); }", "divbranch"), 42)
+
+    def test_unary_minus_negates_a_runtime_value(self):
+        # Literal negation is folded in the parser, so only a computed operand
+        # exercises the codegen path.
+        _, ir = compile_source("fn f(x: i32) -> i32 { return -x; } fn main() -> i32 { return 42; }")
+        self.assertIn("sub i32 0, %x", ir)
+        self.assertEqual(
+            self._build_and_run(
+                "fn main() -> i32 { var a: i32 = 5; return (-a) + 47; }", "negrt"), 42)
 
     def test_signed_division_and_remainder_run_natively(self):
         require_clang()
