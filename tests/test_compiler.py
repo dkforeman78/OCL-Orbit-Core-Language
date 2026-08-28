@@ -1888,6 +1888,33 @@ fn main() -> i32 { return value(Direction.North); }
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(run_executable(executable), 42)
 
+    def test_match_scrutinee_must_be_an_enumeration(self):
+        # Without this check the analyzer keeps a None enumeration and the next
+        # line reads .variants off it, so the compiler dies with an
+        # AttributeError instead of reporting E0235.
+        self.assertDiagnostic(
+            "fn main() -> i32 { var n: i32 = 0; return match n { }; }",
+            "E0235", "requires an enumeration")
+        self.assertDiagnostic(
+            "fn main() -> i32 { return match true { }; }", "E0235", "requires an enumeration")
+        self.assertDiagnostic(
+            "struct S { f: i32 } fn main() -> i32 { var s: S = S { f: 1 }; return match s { }; }",
+            "E0235", "requires an enumeration")
+
+    def test_match_switch_defaults_to_an_invalid_discriminant_trap(self):
+        # The architecture overview states the lowering includes an unreachable
+        # invalid-discriminant trap. Exhaustiveness makes it unreachable for any
+        # well-typed program, so only the emitted shape can hold it in place.
+        _, ir = compile_source(
+            "enum A { X, Y } fn f(a: A) -> i32 { return match a { A.X => 1, A.Y => 2 }; } "
+            "fn main() -> i32 { return 42; }")
+        switch = next(line for line in ir.splitlines() if "switch i32" in line)
+        invalid = switch.split("label %")[1].strip().rstrip(" [")
+        self.assertIn("ocl.match.invalid", invalid)
+        body = ir.split(f"{invalid}:")[1]
+        self.assertTrue(body.lstrip().startswith("call void @llvm.trap()"), body[:80])
+        self.assertIn("unreachable", body.split("ocl.match.arm0")[0])
+
     def test_match_lowers_to_switch_with_correct_phi_predecessors(self):
         _, ir = compile_source(self.SOURCE)
         self.assertIn("switch i32 %d", ir)
