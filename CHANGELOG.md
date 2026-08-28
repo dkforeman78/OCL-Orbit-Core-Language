@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.0 - 2026-08-28
+
+- Added initialized mutable `var` bindings and type-checked reassignment while preserving immutable SSA `let` bindings.
+- Added lexical statement blocks, `while` statements, and early `return` with fallthrough and unreachable-code diagnostics.
+- Added short-circuiting `&&` and `||` plus unary Boolean `!` with conventional precedence.
+- Added LLVM entry-block storage, loads/stores, loop CFGs, and phi-based short-circuit lowering without changing the external ABI.
+- Added the `repeat.ocl` native acceptance program and extended all six CI jobs.
+
+### Fixed after independent review
+
+- Every native test run is now time-bounded. A defect in loop or short-circuit lowering emits IR LLVM accepts and a binary that never terminates; the loop acceptance test had no timeout, so such a defect hung the suite instead of failing it, and would have spun a CI job until the platform killed it. Eight of nine native runs were unbounded.
+- Semantic analysis and LLVM lowering now reserve the Python stack their recursive statement walks require. The parser's reservation is released when parsing ends, so block nesting at the documented limit raised a `RecursionError` for any caller roughly 750 frames deep, while equivalent expression nesting stayed safe.
+- Added `compiler/stack.py` so one lock and one reservation helper serve every phase that changes the interpreter-global recursion limit.
+- Covered four invariants that no test held down: a `var` initializer is actually stored (dropping it left every slot undef and the suite stayed green); sibling blocks cannot reuse a name (allowing it emits duplicate `alloca` names LLVM rejects); a `return` inside a loop body does not discharge the function's obligation (treating it as one produced an internal compiler error); and a returning loop body emits no back edge.
+- Added a frames-per-block-level test mirroring the expression one, so the statement walks' reservation cannot silently go stale.
+
 ## 0.4.0 - 2026-08-27
 
 - Added the `bool` type and `true`/`false` literals for parameters, locals, function results, and expressions.

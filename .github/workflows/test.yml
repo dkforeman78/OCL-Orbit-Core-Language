@@ -39,7 +39,7 @@ jobs:
           OCL_REQUIRE_CLANG: "1"
         run: python -m unittest discover -s tests -v
 
-      # Preserve earlier contracts and prove the 0.4 decisions milestone.
+      # Preserve earlier contracts and prove the 0.5 repetition milestone.
       - name: Acceptance tests
         shell: bash
         run: |
@@ -47,8 +47,9 @@ jobs:
           python oclc.py build examples/add.ocl
           python oclc.py build examples/local.ocl
           python oclc.py build examples/decisions.ocl
+          python oclc.py build examples/repeat.ocl
           if [ "$RUNNER_OS" = "Windows" ]; then suffix=.exe; else suffix=; fi
-          for program in hello add local decisions; do
+          for program in hello add local decisions repeat; do
             exe="examples/${program}${suffix}"
             set +e
             "./$exe"

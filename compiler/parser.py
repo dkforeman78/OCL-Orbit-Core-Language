@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import sys
-import threading
-
 from .nodes import (
     I32_MAX,
+    AssignmentStatement,
     BinaryExpression,
+    BlockStatement,
     BooleanLiteral,
     CallExpression,
     Expression,
@@ -17,9 +16,14 @@ from .nodes import (
     Parameter,
     Program,
     ReturnStatement,
+    Statement,
+    UnaryExpression,
+    VarStatement,
+    WhileStatement,
 )
 from .diagnostics import DiagnosticError
 from .lexer import Token, TokenKind
+from .stack import RECURSION_LIMIT_LOCK, reserved
 
 _MAX_I32_DIGITS = len(str(I32_MAX))
 
@@ -28,6 +32,14 @@ _MAX_I32_DIGITS = len(str(I32_MAX))
 # the interpreter's stack happens to allow. Real source never approaches this;
 # machine-generated source can, and must get a diagnostic instead of a crash.
 MAX_EXPRESSION_DEPTH = 256
+MAX_BLOCK_DEPTH = 256
+
+# Python frames consumed per block level by the recursive statement walks in
+# `semantic._analyze_statements` and `codegen._lower_statements`. Those walks run
+# after parsing, so they reserve stack of their own;
+# `test_frames_per_block_level_matches_the_statement_walkers` fails if this is
+# stale, so their guard cannot silently stop working either.
+FRAMES_PER_BLOCK_LEVEL = 1
 
 # Python frames consumed per level of expression nesting: _expression through
 # the precedence tiers to _primary, which then re-enters _expression. The count
@@ -37,15 +49,11 @@ MAX_EXPRESSION_DEPTH = 256
 # from wherever the caller happens to be. Adding a precedence tier raises this
 # number; `test_frames_per_nesting_level_matches_the_parser` fails if it is
 # stale, so the guard cannot silently stop working.
-FRAMES_PER_LEVEL = 7
+FRAMES_PER_LEVEL = 10
 
-# Slack for the driver, the CLI and the tail of _primary beyond the recursive call.
-_STACK_MARGIN = 96
-
-# sys.setrecursionlimit affects the whole interpreter. Serialize parse calls so
-# overlapping compiler invocations cannot restore each other's saved limits out
-# of order. RLock also keeps a future same-thread nested parse from deadlocking.
-_RECURSION_LIMIT_LOCK = threading.RLock()
+# Re-exported so the serialization guarantee is one lock across every phase that
+# temporarily changes the interpreter-global recursion limit.
+_RECURSION_LIMIT_LOCK = RECURSION_LIMIT_LOCK
 
 
 class Parser:
@@ -54,6 +62,7 @@ class Parser:
         self.source = source
         self.current = 0
         self.depth = 0
+        self.block_depth = 0
 
     def parse(self) -> Program:
         functions: list[Function] = []
@@ -69,25 +78,57 @@ class Parser:
         self._expect(TokenKind.RIGHT_PAREN, "expected ')' after parameters")
         self._expect(TokenKind.ARROW, "expected '->' before return type")
         return_type = self._expect(TokenKind.IDENTIFIER, "expected return type")
-        self._expect(TokenKind.LEFT_BRACE, "expected '{' to begin function body")
-        statements: list[LetStatement | ReturnStatement] = []
-        while not self._at(TokenKind.RIGHT_BRACE) and not self._at(TokenKind.EOF):
-            if self._at(TokenKind.LET):
-                statements.append(self._let_statement())
-            else:
-                statements.append(self._return_statement())
-        self._expect(TokenKind.RIGHT_BRACE, "expected '}' to close function body")
-        return Function(name.lexeme, return_type.lexeme, tuple(statements), start.location, tuple(parameters))
+        body = self._block("expected '{' to begin function body")
+        return Function(name.lexeme, return_type.lexeme, body.statements, start.location, tuple(parameters))
+
+    def _block(self, message: str = "expected '{' to begin block") -> BlockStatement:
+        start = self._expect(TokenKind.LEFT_BRACE, message)
+        self.block_depth += 1
+        if self.block_depth > MAX_BLOCK_DEPTH:
+            self.block_depth -= 1
+            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.5 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
+        try:
+            statements: list[Statement] = []
+            while not self._at(TokenKind.RIGHT_BRACE) and not self._at(TokenKind.EOF):
+                statements.append(self._statement())
+            self._expect(TokenKind.RIGHT_BRACE, "expected '}' to close block")
+            return BlockStatement(tuple(statements), start.location)
+        finally:
+            self.block_depth -= 1
+
+    def _statement(self) -> Statement:
+        if self._at(TokenKind.LET):
+            return self._binding(False)
+        if self._at(TokenKind.VAR):
+            return self._binding(True)
+        if self._at(TokenKind.RETURN):
+            return self._return_statement()
+        if self._at(TokenKind.WHILE):
+            start = self._expect(TokenKind.WHILE, "expected 'while'")
+            condition = self._expression()
+            return WhileStatement(condition, self._block("expected '{' after while condition"), start.location)
+        if self._at(TokenKind.LEFT_BRACE):
+            return self._block()
+        name = self._expect(TokenKind.IDENTIFIER, "expected statement")
+        self._expect(TokenKind.EQUAL, "expected '=' in assignment")
+        expression = self._expression()
+        self._expect(TokenKind.SEMICOLON, "expected ';' after assignment")
+        return AssignmentStatement(name.lexeme, expression, name.location)
 
     def _let_statement(self) -> LetStatement:
-        self._expect(TokenKind.LET, "expected 'let'")
-        name = self._expect(TokenKind.IDENTIFIER, "expected local name after 'let'")
+        return self._binding(False)
+
+    def _binding(self, mutable: bool) -> LetStatement | VarStatement:
+        keyword = "var" if mutable else "let"
+        self._expect(TokenKind.VAR if mutable else TokenKind.LET, f"expected '{keyword}'")
+        name = self._expect(TokenKind.IDENTIFIER, f"expected local name after '{keyword}'")
         self._expect(TokenKind.COLON, "expected ':' after local name")
         type_name = self._expect(TokenKind.IDENTIFIER, "expected local type")
         self._expect(TokenKind.EQUAL, "expected '=' before local initializer")
         initializer = self._expression()
         self._expect(TokenKind.SEMICOLON, "expected ';' after local binding")
-        return LetStatement(name.lexeme, type_name.lexeme, initializer, name.location)
+        binding = VarStatement if mutable else LetStatement
+        return binding(name.lexeme, type_name.lexeme, initializer, name.location)
 
     def _parameters(self) -> list[Parameter]:
         parameters: list[Parameter] = []
@@ -114,14 +155,28 @@ class Parser:
         if self.depth > MAX_EXPRESSION_DEPTH:
             raise DiagnosticError(
                 "E0101",
-                f"expression is nested too deeply; OCL 0.4 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                f"expression is nested too deeply; OCL 0.5 allows at most {MAX_EXPRESSION_DEPTH} levels",
                 self.source,
                 self.tokens[self.current].location,
             )
         try:
-            return self._equality()
+            return self._logical_or()
         finally:
             self.depth -= 1
+
+    def _logical_or(self) -> Expression:
+        expression = self._logical_and()
+        while self._match(TokenKind.OR_OR):
+            operator = self.tokens[self.current - 1]
+            expression = BinaryExpression(expression, operator.lexeme, self._logical_and(), operator.location)
+        return expression
+
+    def _logical_and(self) -> Expression:
+        expression = self._equality()
+        while self._match(TokenKind.AND_AND):
+            operator = self.tokens[self.current - 1]
+            expression = BinaryExpression(expression, operator.lexeme, self._equality(), operator.location)
+        return expression
 
     def _equality(self) -> Expression:
         expression = self._comparison()
@@ -146,11 +201,29 @@ class Parser:
         return expression
 
     def _term(self) -> Expression:
-        expression = self._primary()
+        expression = self._unary()
         while self._match(TokenKind.STAR):
             operator = self.tokens[self.current - 1]
-            expression = BinaryExpression(expression, operator.lexeme, self._primary(), operator.location)
+            expression = BinaryExpression(expression, operator.lexeme, self._unary(), operator.location)
         return expression
+
+    def _unary(self) -> Expression:
+        if self._match(TokenKind.BANG):
+            operator = self.tokens[self.current - 1]
+            self.depth += 1
+            if self.depth > MAX_EXPRESSION_DEPTH:
+                self.depth -= 1
+                raise DiagnosticError(
+                    "E0101",
+                    f"expression is nested too deeply; OCL 0.5 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                    self.source,
+                    operator.location,
+                )
+            try:
+                return UnaryExpression(operator.lexeme, self._unary(), operator.location)
+            finally:
+                self.depth -= 1
+        return self._primary()
 
     def _primary(self) -> Expression:
         if self._at(TokenKind.TRUE) or self._at(TokenKind.FALSE):
@@ -220,15 +293,6 @@ class Parser:
         return True
 
 
-def _stack_depth() -> int:
-    depth = 0
-    frame: object = sys._getframe()
-    while frame is not None:
-        depth += 1
-        frame = frame.f_back
-    return depth
-
-
 def parse(tokens: list[Token], source: str) -> Program:
     """Parse a token stream, guaranteeing E0101 rather than a RecursionError.
 
@@ -238,13 +302,5 @@ def parse(tokens: list[Token], source: str) -> Program:
     guard could fire. Reserving the frames the bound actually needs keeps the
     documented limit deterministic instead of dependent on the call site.
     """
-    with _RECURSION_LIMIT_LOCK:
-        required = MAX_EXPRESSION_DEPTH * FRAMES_PER_LEVEL + _STACK_MARGIN
-        previous_limit = sys.getrecursionlimit()
-        stack_depth = _stack_depth()
-        if previous_limit - stack_depth < required:
-            sys.setrecursionlimit(stack_depth + required)
-        try:
-            return Parser(tokens, source).parse()
-        finally:
-            sys.setrecursionlimit(previous_limit)
+    with reserved(MAX_EXPRESSION_DEPTH * FRAMES_PER_LEVEL):
+        return Parser(tokens, source).parse()

@@ -8,12 +8,18 @@
 4. `codegen` lowers the validated AST to textual LLVM IR.
 5. `cli` invokes Clang for LLVM compilation and host-native linking.
 
-Direct AST-to-LLVM lowering is limited to the bootstrap. The 0.4 semantic pass first collects typed function signatures, then validates bodies in source order, allowing forward calls while making local-binding visibility deterministic. Its iterative post-order expression walk acts as the prototype type checker for `i32` and `bool`. An Orbit IR layer can be inserted later without changing the lexer, parser, or command surface. Diagnostics carry stable-looking codes for tooling, but codes are provisional during 0.x.
+Direct AST-to-LLVM lowering is limited to the bootstrap. The 0.5 semantic pass first collects typed function signatures, then validates blocks in source order, allowing forward calls while making lexical visibility deterministic. Its iterative post-order expression walk acts as the prototype type checker for `i32` and `bool`. An Orbit IR layer can be inserted later without changing the lexer, parser, or command surface. Diagnostics carry stable-looking codes for tooling, but codes are provisional during 0.x.
 
-Prototype 0.4 locals are immutable and lower directly to LLVM SSA operands. A
+Immutable `let` locals still lower directly to LLVM SSA operands. A
 local whose initializer is a constant or parameter is an alias in the compiler's
 value environment; a computed initializer names the resulting SSA temporary.
-No `alloca`, load, store, mutable storage, lifetime, or ABI behavior is introduced.
+For `let`, no `alloca`, load, store, mutable storage, lifetime, or ABI behavior is introduced.
+
+Prototype 0.5 `var` locals use type-specific stack slots allocated once in the
+entry block. Assignments store and reads load; lexical scope is enforced before
+lowering. `while` emits condition/body/exit blocks, while `&&` and `||` use
+conditional branches and `phi` nodes so their right operands genuinely short-circuit.
+These are function-local implementation details and do not change the external ABI.
 
 Boolean values lower to LLVM `i1`. An `if` expression creates deterministic,
 compiler-reserved then/else/merge block labels, emits a conditional branch, and
@@ -28,6 +34,13 @@ Expression depth is bounded only by the source, so recursing would let a large b
 entirely valid program become a `RecursionError` instead of a binary. Recursive
 descent in the parser is inherently recursive, so it caps nesting explicitly and
 reports `E0101` rather than relying on the interpreter's stack limit.
+
+The recursive statement walks in semantic analysis and lowering carry the same
+obligation. `MAX_BLOCK_DEPTH` bounds how deeply blocks may nest, but the parser's
+reservation ends with parsing, so those walks reserve their own stack through the
+shared helper in `compiler/stack.py`. One `RLock` and one reservation helper serve
+every phase, so concurrent compilations cannot restore each other's saved limits
+out of order.
 
 That cap is a parser-level count, but it is enforced by Python frames, so `parse`
 reserves the stack the bound actually needs before parsing and restores the
@@ -65,7 +78,7 @@ approach — the CRT-free entry point must be redesigned before any of these app
 - any call into the C runtime, libc, or an imported system library;
 - any need for `argc`/`argv`, or an exit path other than returning from `main`.
 
-0.4 adds `i1` values and intra-function conditional control flow while staying inside that envelope:
+0.5 adds private mutable slots and loop control flow while staying inside that envelope:
 frames are tens of bytes and the linked binary imports nothing. Verified on the
-x86-64 host — `main` in `examples/decisions.ocl`, the 0.4 acceptance program,
+x86-64 host — `main` in `examples/repeat.ocl`, the 0.5 acceptance program,
 allocates `0x28` bytes and calls no imported symbol.
