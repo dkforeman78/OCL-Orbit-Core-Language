@@ -1,0 +1,6 @@
+fn main() -> i32 {
+    var values: [i32; 4] = [10, 20, 7, 5];
+    var index: i32 = 2;
+    values[index] = values[index] + values[3];
+    return values[0] + values[1] + values[2];
+}

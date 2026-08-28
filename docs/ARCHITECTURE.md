@@ -8,7 +8,9 @@
 4. `codegen` lowers the validated AST to textual LLVM IR.
 5. `cli` invokes Clang for LLVM compilation and host-native linking.
 
-Direct AST-to-LLVM lowering is limited to the bootstrap. The 0.6 semantic pass first collects typed function signatures, then validates blocks in source order, allowing forward calls while making lexical visibility deterministic. Its iterative post-order expression walk acts as the prototype type checker for `i32` and `bool`. An Orbit IR layer can be inserted later without changing the lexer, parser, or command surface. Diagnostics carry stable-looking codes for tooling, but codes are provisional during 0.x.
+Direct AST-to-LLVM lowering is limited to the bootstrap. The 0.7 semantic pass first collects typed function signatures, then validates blocks in source order, allowing forward calls while making lexical visibility deterministic. Its iterative post-order expression walk acts as the prototype type checker for `i32`, `bool`, and local fixed-array types. An Orbit IR layer can be inserted later without changing the lexer, parser, or command surface. Diagnostics carry stable-looking codes for tooling, but codes are provisional during 0.x.
+
+Fixed arrays lower to LLVM `[N x T]` objects allocated in the function entry block. Element addresses use guarded `getelementptr inbounds`: an unsigned comparison rejects both indices at or above the length and negative `i32` indices before the pointer is formed. Constant invalid indices are rejected during semantic analysis. Arrays remain local-only so Prototype 0.7 does not establish aggregate ABI, copying, slice, pointer, or ownership semantics. The 256-element per-array and 2048-byte per-function caps are implementation bounds chosen to keep the CRT-free Windows bootstrap away from unsupported large-frame behavior and may change with the runtime design.
 
 Immutable `let` locals still lower directly to LLVM SSA operands. A
 local whose initializer is a constant or parameter is an alias in the compiler's

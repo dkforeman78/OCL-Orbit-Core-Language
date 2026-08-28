@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0 - Unreleased
+
+- Added local fixed-size `[T; N]` arrays of `i32` and `bool`, array literals, indexing, and mutable element assignment.
+- Added compile-time diagnostics for invalid array shapes and constant out-of-bounds indices.
+- Added deterministic runtime traps for computed out-of-bounds indices, including negative indices.
+- Added provisional 256-element per-array and 2048-byte per-function limits while the bootstrap uses its CRT-free Windows entry model.
+- Added the `arrays.ocl` native acceptance program.
+
 ## 0.6.0 - 2026-08-28
 
 - Added nearest-loop `break;` and `continue;` with unreachable-statement and outside-loop diagnostics.

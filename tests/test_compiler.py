@@ -862,6 +862,115 @@ class Ocl06Tests(DiagnosticAssertions):
             self.assertEqual(run_executable(executable), 42)
 
 
+class Ocl07Tests(DiagnosticAssertions):
+    def _build_and_run(self, source: str, name: str = "array") -> int:
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / f"{name}.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / (f"{name}.exe" if os.name == "nt" else name)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return run_executable(executable, timeout=10)
+
+    def test_integer_array_literal_index_and_element_assignment_run_natively(self):
+        self.assertEqual(self._build_and_run(
+            "fn main() -> i32 { var a: [i32; 3] = [10, 20, 12]; "
+            "var i: i32 = 2; a[i] = a[0] + a[1] - 18; return a[0] + a[1] + a[2]; }"
+        ), 42)
+
+    def test_boolean_arrays_are_supported(self):
+        self.assertEqual(self._build_and_run(
+            "fn main() -> i32 { let a: [bool; 2] = [false, true]; "
+            "return if a[1] { 42 } else { 0 }; }", "boolarray"), 42)
+
+    def test_arrays_use_entry_storage_and_guarded_gep(self):
+        _, ir = compile_source(
+            "fn main() -> i32 { { var a: [i32; 2] = [40, 2]; var i: i32 = 1; return a[0] + a[i]; } }"
+        )
+        self.assertIn("%ocl.var.a = alloca [2 x i32]", ir)
+        self.assertIn("icmp ult i32", ir)
+        self.assertIn("getelementptr inbounds [2 x i32]", ir)
+        self.assertIn("call void @llvm.trap()", ir)
+
+    def test_array_bounds_guard_preserves_if_phi_predecessor(self):
+        _, ir = compile_source(
+            "fn main() -> i32 { let a: [i32; 1] = [42]; var i: i32 = 0; "
+            "return if true { a[i] } else { 0 }; }"
+        )
+        phi = next(line for line in ir.splitlines() if " = phi " in line)
+        self.assertIn("%ocl.bounds.safe.", phi)
+        self.assertNotIn("%ocl.if.then.", phi)
+
+    def test_computed_out_of_bounds_indices_trap_deterministically(self):
+        for index in (1, -1):
+            with self.subTest(index=index):
+                source = (
+                    "fn id(x: i32) -> i32 { return x; } "
+                    f"fn main() -> i32 {{ let a: [i32; 1] = [42]; return a[id({index})]; }}"
+                )
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "bounds.ocl"
+                    path.write_text(source, encoding="utf-8")
+                    executable = Path(directory) / ("bounds.exe" if os.name == "nt" else "bounds")
+                    built = subprocess.run(
+                        [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(built.returncode, 0, built.stderr)
+                    assert_deterministic_trap(self, run_executable(executable, timeout=5))
+
+    def test_array_length_bounds_are_diagnostics(self):
+        self.assertDiagnostic("fn main() -> i32 { let a: [i32; 0] = []; return 42; }", "E0219", "greater than zero")
+        self.assertDiagnostic("fn main() -> i32 { let a: [i32; 257] = [1]; return 42; }", "E0219", "at most 256")
+        self.assertEqual(
+            self._build_and_run("fn main() -> i32 { let a: [i32; 01] = [42]; return a[0]; }", "leadingzero"),
+            42,
+        )
+
+    def test_total_local_array_storage_is_bounded(self):
+        declarations = " ".join(
+            f"let a{i}: [i32; 256] = [" + ",".join("0" for _ in range(256)) + "];"
+            for i in range(3)
+        )
+        self.assertDiagnostic(
+            f"fn main() -> i32 {{ {declarations} return 42; }}",
+            "E0219", "at most 2048",
+        )
+
+    def test_array_initializer_must_match_declared_shape(self):
+        self.assertDiagnostic("fn main() -> i32 { let a: [i32; 2] = [1]; return 42; }", "E0214", "expects [i32; 2]")
+        self.assertDiagnostic("fn main() -> i32 { let a: [i32; 2] = [1, true]; return 42; }", "E0214", "one scalar type")
+        self.assertDiagnostic("fn main() -> i32 { let a: [i32; 1] = []; return 42; }", "E0224", "at least one")
+        self.assertDiagnostic(
+            "fn main() -> i32 { let a: [i32; 1] = if true { [1] } else { [2] }; return 42; }",
+            "E0223", "must be an array literal",
+        )
+        self.assertDiagnostic(
+            "fn main() -> i32 { return [42][0]; }",
+            "E0223", "local array binding",
+        )
+
+    def test_indexing_requires_an_array_and_i32_index(self):
+        self.assertDiagnostic("fn main() -> i32 { let x: i32 = 1; return x[0]; }", "E0220", "not an array")
+        self.assertDiagnostic("fn main() -> i32 { let a: [i32; 1] = [42]; return a[true]; }", "E0221", "must be i32")
+
+    def test_constant_out_of_bounds_indices_are_rejected(self):
+        self.assertDiagnostic("fn main() -> i32 { let a: [i32; 1] = [42]; return a[1]; }", "E0222", "outside length 1")
+        self.assertDiagnostic("fn main() -> i32 { let a: [i32; 1] = [42]; return a[-1]; }", "E0222", "outside length 1")
+
+    def test_element_assignment_requires_mutability_and_matching_type(self):
+        self.assertDiagnostic("fn main() -> i32 { let a: [i32; 1] = [42]; a[0] = 1; return 42; }", "E0215", "immutable")
+        self.assertDiagnostic("fn main() -> i32 { var a: [i32; 1] = [42]; a[0] = true; return 42; }", "E0214", "expects i32")
+
+    def test_whole_array_assignment_and_equality_are_not_supported(self):
+        self.assertDiagnostic("fn main() -> i32 { var a: [i32; 1] = [1]; a = [2]; return 42; }", "E0223", "whole-array")
+        self.assertDiagnostic("fn main() -> i32 { let a: [i32; 1] = [1]; return if a == a { 42 } else { 0 }; }", "E0211", "does not support arrays")
+
+
 class DiagnosticRenderingTests(unittest.TestCase):
     """Diagnostics are a product requirement, so the rendered output is asserted."""
 
