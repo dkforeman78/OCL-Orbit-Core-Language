@@ -1104,6 +1104,72 @@ class Ocl08Tests(DiagnosticAssertions):
         self.assertDiagnostic(prefix + "let p: Pair = Pair { x: true, y: false }; return 42; }", "E0214", "field 'x' expects i32")
         self.assertDiagnostic("fn main() -> i32 { let p: Missing = Missing { x: 1 }; return 42; }", "E0200", "unknown type")
 
+    def test_structure_storage_accounting_includes_tail_padding(self):
+        # A trailing field narrower than the structure's alignment leaves tail
+        # padding: { i32, bool } occupies 8 bytes, not 5. Counting the unpadded
+        # offset lets a function declare well past the documented ceiling, and
+        # the ceiling is what keeps a frame inside the page the CRT-free entry
+        # point depends on.
+        declaration = "struct M { n: i32, b: bool } "
+        def program(count):
+            return (declaration + "fn main() -> i32 { "
+                    + " ".join(f"var s{i}: M = M {{ n: 0, b: true }};" for i in range(count))
+                    + " return 42; }")
+
+        program_at_limit, _ = compile_source(program(256))     # 256 * 8 == 2048
+        self.assertEqual(len(program_at_limit.functions), 1)
+        self.assertDiagnostic(program(257), "E0219", "bytes of aggregates")
+
+    def test_structure_storage_accounting_aligns_interior_fields(self):
+        # A wide field between narrow ones is aligned, so { bool, i32, bool }
+        # occupies 12 bytes rather than 6. Only an interior wide field exercises
+        # the per-field alignment step; a trailing one exercises only tail padding.
+        declaration = "struct W { a: bool, n: i32, b: bool } "
+        def program(count):
+            return (declaration + "fn main() -> i32 { "
+                    + " ".join(f"var s{i}: W = W {{ a: true, n: 0, b: true }};" for i in range(count))
+                    + " return 42; }")
+
+        program_at_limit, _ = compile_source(program(170))      # 170 * 12 == 2040
+        self.assertEqual(len(program_at_limit.functions), 1)
+        self.assertDiagnostic(program(171), "E0219", "bytes of aggregates")
+
+    def test_field_assignment_rejects_an_unknown_field(self):
+        # The write path repeats the read path's checks. Without this one the
+        # statement reaches codegen, where looking the field up raises KeyError
+        # and the compiler dies instead of issuing a diagnostic.
+        self.assertDiagnostic(
+            "struct A { x: i32 } fn main() -> i32 { var a: A = A { x: 1 }; a.z = 2; return 42; }",
+            "E0229", "has no field 'z'")
+
+    def test_named_structure_type_follows_declaration_order(self):
+        # getelementptr indices are declaration positions, so the emitted type's
+        # field order must match. Reversing it leaves the indices pointing at
+        # differently sized slots, which type-puns every store.
+        _, ir = compile_source(
+            "struct T { a: bool, b: bool, c: i32 } "
+            "fn main() -> i32 { var t: T = T { a: true, b: true, c: 42 }; "
+            "return if t.a { if t.b { t.c } else { 0 } } else { 0 }; }")
+        self.assertIn("%ocl.struct.T = type { i1, i1, i32 }", ir)
+
+    def test_mixed_field_types_round_trip_natively(self):
+        # A two-field structure survives a reversed layout by accident; three
+        # fields of mixed width do not. Under reversal this program faults.
+        require_clang()
+        source = ("struct T { a: bool, b: bool, c: i32 } "
+                  "fn main() -> i32 { var t: T = T { a: true, b: true, c: 42 }; "
+                  "return if t.a { if t.b { t.c } else { 0 } } else { 0 }; }")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mixed.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / ("mixed.exe" if os.name == "nt" else "mixed")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(run_executable(executable, timeout=10), 42)
+
     def test_field_reads_and_writes_are_strict(self):
         self.assertDiagnostic("fn main() -> i32 { var x: i32 = 1; x.value = 2; return 42; }", "E0230", "not a structure")
         self.assertDiagnostic(

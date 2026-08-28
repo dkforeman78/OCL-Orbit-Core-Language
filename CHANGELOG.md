@@ -9,6 +9,13 @@
 - Added named LLVM structure lowering with entry-block local storage while leaving layout and aggregate ABI semantics provisional.
 - Added the `structures.ocl` native acceptance program.
 
+### Fixed after independent review
+
+- Covered the emitted named-structure field order. `getelementptr` indices are declaration positions, so the LLVM type must list fields in the same order; reversing it left all 205 tests green because every structure in the suite had exactly two fields, which survives a reversal by accident. A three-field `{ bool, bool, i32 }` faults with an access violation under the same defect.
+- Covered the unknown-field guard on the field-*assignment* path. Without it `p.z = 9` reaches codegen and the field lookup raises `KeyError`, so the compiler dies instead of reporting `E0229`.
+- Covered structure storage accounting. Neither tail padding nor per-field alignment was asserted: ignoring tail padding let a function declare 3272 bytes against the 2048 ceiling, and ignoring interior alignment let it declare 3072. That ceiling is what keeps a frame inside the page the CRT-free entry point depends on.
+
+
 ## 0.7.0 - 2026-08-28
 
 - Added local fixed-size `[T; N]` arrays of `i32` and `bool`, array literals, indexing, and mutable element assignment.
