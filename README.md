@@ -1,6 +1,6 @@
 # OCL — Orbit Core Language
 
-OCL Compiler Prototype 0.7 adds bounded local fixed-size arrays.
+OCL Compiler Prototype 0.8 adds local named structures and field access.
 
 ## Prerequisites
 
@@ -13,11 +13,11 @@ OCL Compiler Prototype 0.7 adds bounded local fixed-size arrays.
   back to another compiler. Run `python tools/check_clang_version.py` to confirm
   the toolchain oclc will use.
 - A platform linker supported by Clang. The LLVM Windows installer includes
-  `lld-link`, which is sufficient for Prototype 0.7.
+  `lld-link`, which is sufficient for Prototype 0.8.
 
 The prototype is tested in CI on Windows, Linux, and macOS with Python 3.11 and
 3.12. Windows x86-64 is the primary development host. Cross-compilation and
-ARM64 validation are roadmap work, not 0.7 claims.
+ARM64 validation are roadmap work, not 0.8 claims.
 
 ## Use
 
@@ -49,6 +49,8 @@ $LASTEXITCODE # 42
 .\loop_control.exe
 .\oclc.cmd build examples\arrays.ocl -o arrays.exe
 .\arrays.exe
+.\oclc.cmd build examples\structures.ocl -o structures.exe
+.\structures.exe
 $LASTEXITCODE # 42
 ```
 
@@ -82,13 +84,13 @@ minimum.
 
 ## Scope and limitations
 
-Prototype 0.7 adds local fixed-size arrays, indexing, element assignment, and deterministic bounds traps to the 0.6 language. See [the language specification](docs/OCL_LANGUAGE_SPEC.md) and [architecture overview](docs/ARCHITECTURE.md).
+Prototype 0.8 adds local named structures, named-field literals, field reads, and mutable field assignment to the 0.7 language. See [the language specification](docs/OCL_LANGUAGE_SPEC.md) and [architecture overview](docs/ARCHITECTURE.md).
 
-There is intentionally no type inference, uninitialized variable, array parameters or returns, slices, nested arrays, array copying or equality, `else if`, `for`, labeled loop control, floating point, global storage, `.oxr`/`.ofx` generation, custom linker, stabilized OCL ABI, ownership model, package manager, or standard library yet. Native builds use the host format until the canonical Orbit executable specification is supplied.
+There is intentionally no type inference, uninitialized variable, aggregate parameters or returns, nested aggregates, aggregate copying or equality, slices, methods, stable structure layout, `else if`, `for`, labeled loop control, floating point, global storage, `.oxr`/`.ofx` generation, custom linker, stabilized OCL ABI, ownership model, package manager, or standard library yet. Native builds use the host format until the canonical Orbit executable specification is supplied.
 
 Windows executables are linked without the MSVC C runtime and enter directly at
 `main`, which avoids an unnecessary Visual Studio dependency. This holds for
-0.7's functions, locals, guarded arithmetic, loop control, and bounded local arrays, and the
+0.8's functions, locals, guarded arithmetic, loop control, bounded local arrays, and local structures, and the
 conditions that would invalidate it —
 frames larger than a page, static initializers, any C runtime or system-library
 call, or a need for `argc`/`argv` — are listed in
@@ -96,4 +98,4 @@ call, or a need for `argc`/`argv` — are listed in
 and C ABI linking strategy must be designed before any of those appear.
 The Windows-only linker flags assume Clang's PE/COFF-compatible linker interface;
 they do not select or stabilize a target triple. Clang selects the native host
-target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.7 claim.
+target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.8 claim.
