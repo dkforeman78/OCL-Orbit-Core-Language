@@ -1,0 +1,17 @@
+enum Answer {
+    No,
+    Maybe,
+    Yes,
+}
+
+fn score(answer: Answer) -> i32 {
+    return match answer {
+        Answer.Yes => 42,
+        Answer.No => 0,
+        Answer.Maybe => 21,
+    };
+}
+
+fn main() -> i32 {
+    return score(Answer.Yes);
+}

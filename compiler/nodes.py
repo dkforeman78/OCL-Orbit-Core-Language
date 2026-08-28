@@ -92,7 +92,29 @@ class FieldExpression:
     location: SourceLocation
 
 
-Expression = BooleanLiteral | IntegerLiteral | IdentifierExpression | BinaryExpression | CallExpression | IfExpression | UnaryExpression | ArrayLiteral | IndexExpression | StructLiteral | FieldExpression
+@dataclass(frozen=True)
+class EnumVariantExpression:
+    enum_name: str
+    variant: str
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class MatchArm:
+    enum_name: str
+    variant: str
+    expression: Expression
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class MatchExpression:
+    scrutinee: Expression
+    arms: tuple[MatchArm, ...]
+    location: SourceLocation
+
+
+Expression = BooleanLiteral | IntegerLiteral | IdentifierExpression | BinaryExpression | CallExpression | IfExpression | UnaryExpression | ArrayLiteral | IndexExpression | StructLiteral | FieldExpression | EnumVariantExpression | MatchExpression
 
 
 @dataclass(frozen=True)
@@ -188,6 +210,19 @@ class StructDeclaration:
 
 
 @dataclass(frozen=True)
+class EnumVariant:
+    name: str
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class EnumDeclaration:
+    name: str
+    variants: tuple[EnumVariant, ...]
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
 class Function:
     name: str
     return_type: str
@@ -200,3 +235,4 @@ class Function:
 class Program:
     functions: tuple[Function, ...]
     structures: tuple[StructDeclaration, ...] = ()
+    enumerations: tuple[EnumDeclaration, ...] = ()

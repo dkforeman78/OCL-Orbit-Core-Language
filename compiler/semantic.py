@@ -16,6 +16,8 @@ from .nodes import (
     I32_MAX,
     IdentifierExpression,
     IfExpression,
+    EnumVariantExpression,
+    MatchExpression,
     FieldAssignmentStatement,
     FieldExpression,
     IndexAssignmentStatement,
@@ -29,7 +31,7 @@ from .nodes import (
     VarStatement,
     WhileStatement,
 )
-from .types import ArrayType, ScalarType, StructType
+from .types import ArrayType, EnumType, ScalarType, StructType
 
 SUPPORTED_TYPES = frozenset(("bool", "i32"))
 ARITHMETIC_OPERATORS = frozenset(("+", "-", "*", "/", "%"))
@@ -51,7 +53,7 @@ def _array_type(type_name: str) -> tuple[str, int] | None:
         return None
 
 
-def _require_known_type(type_name: str, source: str, location: SourceLocation, *, arrays: bool = False, structures=None) -> None:
+def _require_known_type(type_name: str, source: str, location: SourceLocation, *, arrays: bool = False, structures=None, enumerations=None) -> None:
     if type_name in SUPPORTED_TYPES:
         return
     array = _array_type(type_name)
@@ -62,12 +64,14 @@ def _require_known_type(type_name: str, source: str, location: SourceLocation, *
     if arrays and array and array[1] <= 0:
         raise DiagnosticError("E0219", "array length must be greater than zero", source, location)
     if arrays and array and array[1] > 256:
-        raise DiagnosticError("E0219", "Prototype 0.8 arrays may contain at most 256 elements", source, location)
+        raise DiagnosticError("E0219", "Prototype 0.9 arrays may contain at most 256 elements", source, location)
     if structures is not None and str(type_name) in structures:
+        return
+    if enumerations is not None and str(type_name) in enumerations:
         return
     if isinstance(type_name, StructType):
         raise DiagnosticError("E0200", f"unknown type '{type_name}'", source, location)
-    raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.8 supports scalar and approved local aggregate types", source, location)
+    raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.9 supports scalar, enumeration, and approved local aggregate types", source, location)
 
 
 def analyze(program: Program, source: str) -> None:
@@ -84,8 +88,25 @@ def analyze(program: Program, source: str) -> None:
 
 
 def _analyze(program: Program, source: str) -> None:
+    enumerations = {}
+    for enumeration in program.enumerations:
+        if enumeration.name in enumerations:
+            raise DiagnosticError("E0232", f"duplicate enumeration '{enumeration.name}'", source, enumeration.location)
+        if not enumeration.variants:
+            raise DiagnosticError("E0233", f"enumeration '{enumeration.name}' must declare at least one variant", source, enumeration.location)
+        if len(enumeration.variants) > 256:
+            raise DiagnosticError("E0233", f"enumeration '{enumeration.name}' has more than 256 variants", source, enumeration.location)
+        names = set()
+        for variant in enumeration.variants:
+            if variant.name in names:
+                raise DiagnosticError("E0233", f"duplicate variant '{variant.name}' in enumeration '{enumeration.name}'", source, variant.location)
+            names.add(variant.name)
+        enumerations[enumeration.name] = enumeration
+
     structures = {}
     for structure in program.structures:
+        if structure.name in enumerations:
+            raise DiagnosticError("E0232", f"type name '{structure.name}' is already declared", source, structure.location)
         if structure.name in structures:
             raise DiagnosticError("E0225", f"duplicate structure '{structure.name}'", source, structure.location)
         if not structure.fields:
@@ -105,10 +126,10 @@ def _analyze(program: Program, source: str) -> None:
         if function.name in functions:
             raise DiagnosticError("E0201", f"duplicate function '{function.name}'", source, function.location)
         functions[function.name] = function
-        _require_known_type(function.return_type, source, function.location)
+        _require_known_type(function.return_type, source, function.location, enumerations=enumerations)
         parameter_names: set[str] = set()
         for parameter in function.parameters:
-            _require_known_type(parameter.type_name, source, parameter.location)
+            _require_known_type(parameter.type_name, source, parameter.location, enumerations=enumerations)
             if parameter.name in parameter_names:
                 raise DiagnosticError("E0205", f"duplicate parameter '{parameter.name}'", source, parameter.location)
             parameter_names.add(parameter.name)
@@ -126,14 +147,14 @@ def _analyze(program: Program, source: str) -> None:
         if array_bytes > MAX_LOCAL_ARRAY_BYTES:
             raise DiagnosticError(
                 "E0219",
-                f"function '{function.name}' declares {array_bytes} bytes of aggregates; Prototype 0.8 allows at most {MAX_LOCAL_ARRAY_BYTES}",
+                f"function '{function.name}' declares {array_bytes} bytes of aggregates; Prototype 0.9 allows at most {MAX_LOCAL_ARRAY_BYTES}",
                 source,
                 function.location,
             )
         parameter_names = {parameter.name for parameter in function.parameters}
         scope = {parameter.name: (parameter.type_name, False) for parameter in function.parameters}
         declared = set(parameter_names)
-        if _analyze_statements(function.body, scope, declared, functions, function, source, structures=structures) != "return":
+        if _analyze_statements(function.body, scope, declared, functions, function, source, structures=structures, enumerations=enumerations) != "return":
             raise DiagnosticError("E0202", f"function '{function.name}' can reach the end without returning", source, function.location)
 
 
@@ -162,20 +183,20 @@ def _local_aggregate_bytes(statements, structures) -> int:
     return total
 
 
-def _analyze_statements(statements, scope, declared, functions, function, source, loop_depth=0, structures=None):
+def _analyze_statements(statements, scope, declared, functions, function, source, loop_depth=0, structures=None, enumerations=None):
     flow = None
     for statement in statements:
         if flow:
             raise DiagnosticError("E0216", f"unreachable statement after {flow}", source, statement.location)
         if isinstance(statement, (LetStatement, VarStatement)):
-            _require_known_type(statement.type_name, source, statement.location, arrays=True, structures=structures)
+            _require_known_type(statement.type_name, source, statement.location, arrays=True, structures=structures, enumerations=enumerations)
             if statement.name in declared:
-                raise DiagnosticError("E0210", f"name '{statement.name}' is already declared in this function; OCL 0.8 has no shadowing", source, statement.location)
+                raise DiagnosticError("E0210", f"name '{statement.name}' is already declared in this function; OCL 0.9 has no shadowing", source, statement.location)
             if _array_type(statement.type_name) and not isinstance(statement.initializer, ArrayLiteral):
                 raise DiagnosticError("E0223", "array initializer must be an array literal in OCL 0.7", source, statement.initializer.location)
             if str(statement.type_name) in structures and not isinstance(statement.initializer, StructLiteral):
                 raise DiagnosticError("E0231", "structure initializer must be a named-field literal in OCL 0.8", source, statement.initializer.location)
-            actual = _analyze_expression(statement.initializer, scope, functions, source, structures)
+            actual = _analyze_expression(statement.initializer, scope, functions, source, structures, enumerations)
             if actual != statement.type_name:
                 raise DiagnosticError("E0214", f"local '{statement.name}' expects {statement.type_name}, got {actual}", source, statement.location)
             scope[statement.name] = (statement.type_name, isinstance(statement, VarStatement))
@@ -190,7 +211,7 @@ def _analyze_statements(statements, scope, declared, functions, function, source
                 raise DiagnosticError("E0223", "whole-array assignment is not supported in OCL 0.7", source, statement.location)
             if str(expected) in structures:
                 raise DiagnosticError("E0231", "whole-structure assignment is not supported in OCL 0.8", source, statement.location)
-            actual = _analyze_expression(statement.expression, scope, functions, source, structures)
+            actual = _analyze_expression(statement.expression, scope, functions, source, structures, enumerations)
             if actual != expected:
                 raise DiagnosticError("E0214", f"assignment to '{statement.name}' expects {expected}, got {actual}", source, statement.location)
         elif isinstance(statement, IndexAssignmentStatement):
@@ -202,12 +223,12 @@ def _analyze_statements(statements, scope, declared, functions, function, source
                 raise DiagnosticError("E0220", f"'{statement.name}' is not an array", source, statement.location)
             if not mutable:
                 raise DiagnosticError("E0215", f"cannot assign through immutable binding '{statement.name}'", source, statement.location)
-            index_type = _analyze_expression(statement.index, scope, functions, source, structures)
+            index_type = _analyze_expression(statement.index, scope, functions, source, structures, enumerations)
             if index_type != "i32":
                 raise DiagnosticError("E0221", f"array index must be i32, got {index_type}", source, statement.index.location)
             if isinstance(statement.index, IntegerLiteral) and not 0 <= statement.index.value < array[1]:
                 raise DiagnosticError("E0222", f"array index {statement.index.value} is outside length {array[1]}", source, statement.index.location)
-            actual = _analyze_expression(statement.expression, scope, functions, source, structures)
+            actual = _analyze_expression(statement.expression, scope, functions, source, structures, enumerations)
             if actual != array[0]:
                 raise DiagnosticError("E0214", f"array element expects {array[0]}, got {actual}", source, statement.expression.location)
         elif isinstance(statement, FieldAssignmentStatement):
@@ -222,12 +243,12 @@ def _analyze_statements(statements, scope, declared, functions, function, source
             fields = {field.name: field for field in structure.fields}
             if statement.field not in fields:
                 raise DiagnosticError("E0229", f"structure '{structure.name}' has no field '{statement.field}'", source, statement.location)
-            actual = _analyze_expression(statement.expression, scope, functions, source, structures)
+            actual = _analyze_expression(statement.expression, scope, functions, source, structures, enumerations)
             required = fields[statement.field].type_name
             if actual != required:
                 raise DiagnosticError("E0214", f"field '{statement.field}' expects {required}, got {actual}", source, statement.expression.location)
         elif isinstance(statement, ReturnStatement):
-            actual = _analyze_expression(statement.expression, scope, functions, source, structures)
+            actual = _analyze_expression(statement.expression, scope, functions, source, structures, enumerations)
             if actual != function.return_type:
                 raise DiagnosticError("E0214", f"function '{function.name}' returns {function.return_type}, got {actual}", source, statement.location)
             flow = "return"
@@ -236,12 +257,12 @@ def _analyze_statements(statements, scope, declared, functions, function, source
                 raise DiagnosticError("E0218", f"'{type(statement).__name__.removesuffix('Statement').lower()}' is only valid inside while", source, statement.location)
             flow = "break" if isinstance(statement, BreakStatement) else "continue"
         elif isinstance(statement, BlockStatement):
-            flow = _analyze_statements(statement.statements, dict(scope), declared, functions, function, source, loop_depth, structures)
+            flow = _analyze_statements(statement.statements, dict(scope), declared, functions, function, source, loop_depth, structures, enumerations)
         elif isinstance(statement, WhileStatement):
-            condition = _analyze_expression(statement.condition, scope, functions, source, structures)
+            condition = _analyze_expression(statement.condition, scope, functions, source, structures, enumerations)
             if condition != "bool":
                 raise DiagnosticError("E0212", f"while condition must be bool, got {condition}", source, statement.condition.location)
-            _analyze_statements(statement.body.statements, dict(scope), declared, functions, function, source, loop_depth + 1, structures)
+            _analyze_statements(statement.body.statements, dict(scope), declared, functions, function, source, loop_depth + 1, structures, enumerations)
         else:
             raise InternalCompilerError(f"unsupported statement node: {type(statement).__name__}")
     return flow
@@ -264,10 +285,12 @@ def _operands(expression: Expression) -> tuple[Expression, ...]:
         return tuple(field.expression for field in expression.fields)
     if isinstance(expression, FieldExpression):
         return (expression.base,)
+    if isinstance(expression, MatchExpression):
+        return (expression.scrutinee, *(arm.expression for arm in expression.arms))
     return ()
 
 
-def _analyze_expression(expression: Expression, scope: dict[str, str], functions: dict, source: str, structures=None) -> str:
+def _analyze_expression(expression: Expression, scope: dict[str, str], functions: dict, source: str, structures=None, enumerations=None) -> str:
     """Type-check one expression without recursing over its AST."""
     types: dict[int, str] = {}
     pending: list[tuple[Expression, bool]] = [(expression, False)]
@@ -288,7 +311,15 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
                 except KeyError as error:
                     raise DiagnosticError("E0206", f"unknown identifier '{node.name}'", source, node.location) from error
                 continue
-            if not isinstance(node, (BinaryExpression, CallExpression, IfExpression, UnaryExpression, ArrayLiteral, IndexExpression, StructLiteral, FieldExpression)):
+            if isinstance(node, EnumVariantExpression):
+                enumeration = enumerations.get(node.enum_name)
+                if enumeration is None:
+                    raise DiagnosticError("E0234", f"unknown enumeration '{node.enum_name}'", source, node.location)
+                if node.variant not in {variant.name for variant in enumeration.variants}:
+                    raise DiagnosticError("E0234", f"enumeration '{node.enum_name}' has no variant '{node.variant}'", source, node.location)
+                types[id(node)] = EnumType(node.enum_name)
+                continue
+            if not isinstance(node, (BinaryExpression, CallExpression, IfExpression, UnaryExpression, ArrayLiteral, IndexExpression, StructLiteral, FieldExpression, MatchExpression)):
                 raise InternalCompilerError(f"unsupported expression node: {type(node).__name__}")
             pending.append((node, True))
             pending.extend((operand, False) for operand in reversed(_operands(node)))
@@ -405,6 +436,31 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
             if node.field not in fields:
                 raise DiagnosticError("E0229", f"structure '{structure.name}' has no field '{node.field}'", source, node.location)
             types[id(node)] = fields[node.field].type_name
+        elif isinstance(node, MatchExpression):
+            scrutinee_type = types[id(node.scrutinee)]
+            enumeration = enumerations.get(str(scrutinee_type))
+            if enumeration is None:
+                raise DiagnosticError("E0235", f"match requires an enumeration, got {scrutinee_type}", source, node.scrutinee.location)
+            declared = {variant.name for variant in enumeration.variants}
+            seen = set()
+            result_type = None
+            for arm in node.arms:
+                if arm.enum_name != enumeration.name:
+                    raise DiagnosticError("E0236", f"match arm must name enumeration '{enumeration.name}'", source, arm.location)
+                if arm.variant not in declared:
+                    raise DiagnosticError("E0234", f"enumeration '{enumeration.name}' has no variant '{arm.variant}'", source, arm.location)
+                if arm.variant in seen:
+                    raise DiagnosticError("E0236", f"duplicate match arm for '{enumeration.name}.{arm.variant}'", source, arm.location)
+                seen.add(arm.variant)
+                arm_type = types[id(arm.expression)]
+                if result_type is None:
+                    result_type = arm_type
+                elif arm_type != result_type:
+                    raise DiagnosticError("E0213", f"match arms must have the same type, got {result_type} and {arm_type}", source, arm.location)
+            missing = [variant.name for variant in enumeration.variants if variant.name not in seen]
+            if missing:
+                raise DiagnosticError("E0237", f"match is not exhaustive; missing '{enumeration.name}.{missing[0]}'", source, node.location)
+            types[id(node)] = result_type
         else:
             raise InternalCompilerError(f"unsupported expression node: {type(node).__name__}")
     return types[id(expression)]

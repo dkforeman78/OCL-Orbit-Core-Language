@@ -1,6 +1,6 @@
 # OCL — Orbit Core Language
 
-OCL Compiler Prototype 0.8 adds local named structures and field access.
+OCL Compiler Prototype 0.9 adds nominal enumerations and exhaustive match expressions.
 
 ## Prerequisites
 
@@ -13,11 +13,11 @@ OCL Compiler Prototype 0.8 adds local named structures and field access.
   back to another compiler. Run `python tools/check_clang_version.py` to confirm
   the toolchain oclc will use.
 - A platform linker supported by Clang. The LLVM Windows installer includes
-  `lld-link`, which is sufficient for Prototype 0.8.
+  `lld-link`, which is sufficient for Prototype 0.9.
 
 The prototype is tested in CI on Windows, Linux, and macOS with Python 3.11 and
 3.12. Windows x86-64 is the primary development host. Cross-compilation and
-ARM64 validation are roadmap work, not 0.8 claims.
+ARM64 validation are roadmap work, not 0.9 claims.
 
 ## Use
 
@@ -51,6 +51,8 @@ $LASTEXITCODE # 42
 .\arrays.exe
 .\oclc.cmd build examples\structures.ocl -o structures.exe
 .\structures.exe
+.\oclc.cmd build examples\enums.ocl -o enums.exe
+.\enums.exe
 $LASTEXITCODE # 42
 ```
 
@@ -84,13 +86,13 @@ minimum.
 
 ## Scope and limitations
 
-Prototype 0.8 adds local named structures, named-field literals, field reads, and mutable field assignment to the 0.7 language. See [the language specification](docs/OCL_LANGUAGE_SPEC.md) and [architecture overview](docs/ARCHITECTURE.md).
+Prototype 0.9 adds nominal unit enumerations and exhaustive `match` expressions to the 0.8 language. See [the language specification](docs/OCL_LANGUAGE_SPEC.md) and [architecture overview](docs/ARCHITECTURE.md).
 
-There is intentionally no type inference, uninitialized variable, aggregate parameters or returns, nested aggregates, aggregate copying or equality, slices, methods, stable structure layout, `else if`, `for`, labeled loop control, floating point, global storage, `.oxr`/`.ofx` generation, custom linker, stabilized OCL ABI, ownership model, package manager, or standard library yet. Native builds use the host format until the canonical Orbit executable specification is supplied.
+There is intentionally no enum payload, wildcard or guarded match arm, type inference, uninitialized variable, aggregate parameters or returns, nested aggregates, aggregate copying or equality, slices, methods, stable structure or enum representation, `else if`, `for`, labeled loop control, floating point, global storage, `.oxr`/`.ofx` generation, custom linker, stabilized OCL ABI, ownership model, package manager, or standard library yet. Native builds use the host format until the canonical Orbit executable specification is supplied.
 
 Windows executables are linked without the MSVC C runtime and enter directly at
 `main`, which avoids an unnecessary Visual Studio dependency. This holds for
-0.8's functions, locals, guarded arithmetic, loop control, bounded local arrays, and local structures, and the
+0.9's functions, locals, guarded arithmetic, loop control, bounded local arrays, local structures, and enums, and the
 conditions that would invalidate it —
 frames larger than a page, static initializers, any C runtime or system-library
 call, or a need for `argc`/`argv` — are listed in
@@ -98,4 +100,4 @@ call, or a need for `argc`/`argv` — are listed in
 and C ABI linking strategy must be designed before any of those appear.
 The Windows-only linker flags assume Clang's PE/COFF-compatible linker interface;
 they do not select or stabilize a target triple. Clang selects the native host
-target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.8 claim.
+target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.9 claim.

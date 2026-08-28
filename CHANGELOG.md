@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0 - Unreleased
+
+- Added top-level nominal enumerations with one through 256 unit variants.
+- Added enum values in parameters, results, locals, assignments, and strict same-enum equality.
+- Added exhaustive `match` expressions with duplicate, unknown, mismatched, and missing-arm diagnostics.
+- Lowered enums provisionally as LLVM `i32` values and matches as `switch` control flow with typed `phi` merges.
+- Added the `enums.ocl` native acceptance program.
+
 ## 0.8.0 - 2026-08-28
 
 - Added top-level named structures with `i32` and `bool` fields.
