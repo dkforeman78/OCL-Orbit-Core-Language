@@ -35,6 +35,13 @@ entirely valid program become a `RecursionError` instead of a binary. Recursive
 descent in the parser is inherently recursive, so it caps nesting explicitly and
 reports `E0101` rather than relying on the interpreter's stack limit.
 
+The recursive statement walks in semantic analysis and lowering carry the same
+obligation. `MAX_BLOCK_DEPTH` bounds how deeply blocks may nest, but the parser's
+reservation ends with parsing, so those walks reserve their own stack through the
+shared helper in `compiler/stack.py`. One `RLock` and one reservation helper serve
+every phase, so concurrent compilations cannot restore each other's saved limits
+out of order.
+
 That cap is a parser-level count, but it is enforced by Python frames, so `parse`
 reserves the stack the bound actually needs before parsing and restores the
 previous limit afterwards. Without that, a caller who is already deep — an

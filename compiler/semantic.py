@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from .diagnostics import DiagnosticError, InternalCompilerError, SourceLocation
+from .parser import FRAMES_PER_BLOCK_LEVEL, MAX_BLOCK_DEPTH
+from .stack import reserved
 from .nodes import (
     BinaryExpression,
     AssignmentStatement,
@@ -33,6 +35,19 @@ def _require_known_type(type_name: str, source: str, location: SourceLocation) -
 
 
 def analyze(program: Program, source: str) -> None:
+    """Validate a parsed program.
+
+    `_analyze_statements` recurses once per block level, and the parser admits
+    `MAX_BLOCK_DEPTH` of them. The parser's own reservation is released when
+    parsing ends, so this walk reserves the stack it needs itself; otherwise a
+    deeply blocked but entirely valid program becomes a `RecursionError` for any
+    caller that is not already near the top of the stack.
+    """
+    with reserved(MAX_BLOCK_DEPTH * FRAMES_PER_BLOCK_LEVEL):
+        _analyze(program, source)
+
+
+def _analyze(program: Program, source: str) -> None:
     functions = {}
     for function in program.functions:
         if function.name in functions:

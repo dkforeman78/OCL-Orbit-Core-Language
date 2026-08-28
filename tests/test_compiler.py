@@ -14,6 +14,8 @@ from compiler import cli, parser as parser_module
 from compiler.codegen import _escape_llvm_string, generate_llvm_ir
 from compiler.diagnostics import DiagnosticError, InternalCompilerError, SourceLocation
 from compiler.driver import compile_source
+from compiler.lexer import lex
+from compiler.parser import parse
 from compiler.nodes import AssignmentStatement, BinaryExpression, BlockStatement, BooleanLiteral, CallExpression, Function, IdentifierExpression, IfExpression, IntegerLiteral, LetStatement, Program, ReturnStatement, UnaryExpression, VarStatement, WhileStatement
 from compiler.semantic import analyze
 
@@ -39,6 +41,24 @@ def require_clang() -> None:
     if os.environ.get("OCL_REQUIRE_CLANG"):
         raise AssertionError("OCL_REQUIRE_CLANG is set but Clang was not found")
     raise unittest.SkipTest("LLVM/Clang is not installed on this host")
+
+
+
+def run_executable(path, timeout: float = 20.0) -> int:
+    """Run a built OCL program and return its exit code.
+
+    Bounded on purpose. A defect in loop or short-circuit lowering yields IR that
+    LLVM happily accepts and a binary that never terminates; an unbounded run
+    turns that into a hung suite rather than a failing test, and in CI into a job
+    that spins until the platform kills it.
+    """
+    try:
+        return subprocess.run([str(path)], timeout=timeout).returncode
+    except subprocess.TimeoutExpired:
+        raise AssertionError(
+            f"{Path(path).name} did not terminate within {timeout}s; "
+            "control flow lowering probably produced an infinite loop"
+        ) from None
 
 
 class DiagnosticAssertions(unittest.TestCase):
@@ -218,7 +238,7 @@ class Ocl02Tests(unittest.TestCase):
                 capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
+            self.assertEqual(run_executable(executable), 42)
 
 
 class Ocl03Tests(DiagnosticAssertions):
@@ -323,7 +343,7 @@ class Ocl03Tests(DiagnosticAssertions):
                 capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
+            self.assertEqual(run_executable(executable), 42)
 
 
 class Ocl04Tests(DiagnosticAssertions):
@@ -514,7 +534,7 @@ class Ocl04Tests(DiagnosticAssertions):
                         capture_output=True, text=True,
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(subprocess.run([str(executable)]).returncode, want)
+                    self.assertEqual(run_executable(executable), want)
 
     def test_native_decision_returns_42(self):
         require_clang()
@@ -525,7 +545,7 @@ class Ocl04Tests(DiagnosticAssertions):
                 capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
+            self.assertEqual(run_executable(executable), 42)
 
 
 class Ocl05Tests(DiagnosticAssertions):
@@ -564,7 +584,7 @@ class Ocl05Tests(DiagnosticAssertions):
             executable = Path(directory) / ("short_circuit.exe" if os.name == "nt" else "short_circuit")
             result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(subprocess.run([str(executable)], timeout=5).returncode, 42)
+            self.assertEqual(run_executable(executable, timeout=5), 42)
 
     def test_unary_not_requires_bool(self):
         self.assertDiagnostic("fn main() -> i32 { return if !1 { 42 } else { 0 }; }", "E0211", "bool operand")
@@ -602,13 +622,62 @@ class Ocl05Tests(DiagnosticAssertions):
         source = "fn main() -> i32 { " + "{" * 5000 + "return 42;" + "}" * 5000 + " }"
         self.assertDiagnostic(source, "E0102", "block is nested too deeply")
 
+    def test_var_initializer_is_actually_stored(self):
+        # Dropping the initializer store leaves the slot undef. The acceptance
+        # program still returned 42 under that defect because the stack happened
+        # to read as zero, so this asserts the store in the IR and picks a
+        # non-zero value natively where undef cannot pass by luck.
+        _, ir = compile_source("fn main() -> i32 { var x: i32 = 7; return x; }")
+        self.assertIn("  store i32 7, ptr %ocl.var.x", ir)
+
+    def test_var_initial_value_survives_to_runtime(self):
+        require_clang()
+        source = "fn main() -> i32 { var x: i32 = 42; return x; }"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "init.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / ("init.exe" if os.name == "nt" else "init")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(run_executable(executable), 42)
+
+    def test_sibling_blocks_cannot_reuse_a_name(self):
+        # Function-wide uniqueness is what keeps generated `alloca` names unique.
+        # Allowing sibling reuse emits two slots called %ocl.var.x, which LLVM
+        # rejects as "multiple definition of local value".
+        self.assertDiagnostic(
+            "fn main() -> i32 { { var x: i32 = 1; } { var x: i32 = 2; } return 42; }",
+            "E0210", "no shadowing",
+        )
+
+    def test_return_inside_a_loop_does_not_satisfy_the_function(self):
+        # A while body may run zero times, so its return cannot discharge the
+        # function's obligation. Treating it as one lets the program through to
+        # codegen, which then raises an internal compiler error.
+        self.assertDiagnostic(
+            "fn main() -> i32 { while true { return 42; } }",
+            "E0202", "can reach the end without returning",
+        )
+
+    def test_returning_loop_body_emits_no_back_edge(self):
+        _, ir = compile_source(
+            "fn f(go: bool) -> i32 { while go { return 7; } return 42; }"
+            "fn main() -> i32 { return f(false); }"
+        )
+        body = ir.split("ocl.while.body.0:")[1].split("ocl.while.exit.0:")[0]
+        self.assertIn("ret i32 7", body)
+        self.assertNotIn("br label %ocl.while.condition.0", body)
+
     def test_native_repetition_returns_42(self):
         require_clang()
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / ("repeat.exe" if os.name == "nt" else "repeat")
             result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(ROOT / "examples" / "repeat.ocl"), "-o", str(executable)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
+            self.assertEqual(run_executable(executable), 42)
 
 
 class DiagnosticRenderingTests(unittest.TestCase):
@@ -924,6 +993,66 @@ class ExpressionDepthTests(DiagnosticAssertions):
                     "the depth guard keeps reserving enough stack",
                 )
 
+    def test_frames_per_block_level_matches_the_statement_walkers(self):
+        # The sibling of the expression-frames test, for the recursive statement
+        # walks. A stale constant would shrink the reservation those walks depend
+        # on until deeply blocked source became a RecursionError again.
+        def peak_frames(depth, phase):
+            source = "fn main() -> i32 { " + "{ " * depth + "return 42; " + "} " * depth + "}"
+            program = parse(lex(source), source)
+            peak = [0]
+
+            def probe(frame, event, arg):
+                if event == "call":
+                    current, walker = 0, frame
+                    while walker is not None:
+                        current += 1
+                        walker = walker.f_back
+                    peak[0] = max(peak[0], current)
+                return None
+
+            sys.setprofile(probe)
+            try:
+                phase(program, source)
+            finally:
+                sys.setprofile(None)
+            return peak[0]
+
+        phases = {
+            "semantic": lambda program, source: analyze(program, source),
+            "codegen": lambda program, source: generate_llvm_ir(program),
+        }
+        near, far = 40, 80
+        for name, phase in phases.items():
+            with self.subTest(phase=name):
+                slope = (peak_frames(far, phase) - peak_frames(near, phase)) / (far - near)
+                self.assertLessEqual(
+                    slope, parser_module.FRAMES_PER_BLOCK_LEVEL,
+                    f"{name} costs {slope:.2f} frames per block level but "
+                    f"FRAMES_PER_BLOCK_LEVEL is {parser_module.FRAMES_PER_BLOCK_LEVEL}; "
+                    "raise it so the statement walks keep reserving enough stack",
+                )
+
+    def test_deep_blocks_survive_a_deep_caller_stack(self):
+        # The parser reserves stack for expression nesting, but that reservation
+        # is released when parsing ends. The statement walks run afterwards and
+        # must reserve their own, or block nesting at the documented limit becomes
+        # a RecursionError for an embedded caller.
+        depth = parser_module.MAX_BLOCK_DEPTH - 1
+        source = "fn main() -> i32 { " + "{ " * depth + "return 42; " + "} " * depth + "}"
+
+        def deepen(remaining, action):
+            if remaining == 0:
+                return action()
+            return deepen(remaining - 1, action)
+
+        # 800 is past the point where the unreserved walks exhaust the default
+        # limit, so this fails if either reservation is removed.
+        for caller_depth in (0, 400, 800):
+            with self.subTest(caller_depth=caller_depth):
+                _, ir = deepen(caller_depth, lambda: compile_source(source))
+                self.assertIn("ret i32 42", ir)
+
     def test_excessive_nesting_diagnoses_from_a_deep_caller_stack(self):
         source = "fn main() -> i32 { return " + "(" * 5000 + "42" + ")" * 5000 + "; }"
 
@@ -1192,7 +1321,7 @@ class NativeTests(unittest.TestCase):
                 capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
+            self.assertEqual(run_executable(executable), 42)
 
     def test_parameter_named_entry_builds_and_runs(self):
         require_clang()
@@ -1206,7 +1335,7 @@ class NativeTests(unittest.TestCase):
                 capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
+            self.assertEqual(run_executable(executable), 42)
 
     def test_native_build_and_exit_value(self):
         require_clang()
@@ -1218,7 +1347,7 @@ class NativeTests(unittest.TestCase):
                 capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(subprocess.run([str(executable)]).returncode, 42)
+            self.assertEqual(run_executable(executable), 42)
 
 
 if __name__ == "__main__":

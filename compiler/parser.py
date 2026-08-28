@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import sys
-import threading
-
 from .nodes import (
     I32_MAX,
     AssignmentStatement,
@@ -26,6 +23,7 @@ from .nodes import (
 )
 from .diagnostics import DiagnosticError
 from .lexer import Token, TokenKind
+from .stack import RECURSION_LIMIT_LOCK, reserved
 
 _MAX_I32_DIGITS = len(str(I32_MAX))
 
@@ -35,6 +33,13 @@ _MAX_I32_DIGITS = len(str(I32_MAX))
 # machine-generated source can, and must get a diagnostic instead of a crash.
 MAX_EXPRESSION_DEPTH = 256
 MAX_BLOCK_DEPTH = 256
+
+# Python frames consumed per block level by the recursive statement walks in
+# `semantic._analyze_statements` and `codegen._lower_statements`. Those walks run
+# after parsing, so they reserve stack of their own;
+# `test_frames_per_block_level_matches_the_statement_walkers` fails if this is
+# stale, so their guard cannot silently stop working either.
+FRAMES_PER_BLOCK_LEVEL = 1
 
 # Python frames consumed per level of expression nesting: _expression through
 # the precedence tiers to _primary, which then re-enters _expression. The count
@@ -46,13 +51,9 @@ MAX_BLOCK_DEPTH = 256
 # stale, so the guard cannot silently stop working.
 FRAMES_PER_LEVEL = 10
 
-# Slack for the driver, the CLI and the tail of _primary beyond the recursive call.
-_STACK_MARGIN = 96
-
-# sys.setrecursionlimit affects the whole interpreter. Serialize parse calls so
-# overlapping compiler invocations cannot restore each other's saved limits out
-# of order. RLock also keeps a future same-thread nested parse from deadlocking.
-_RECURSION_LIMIT_LOCK = threading.RLock()
+# Re-exported so the serialization guarantee is one lock across every phase that
+# temporarily changes the interpreter-global recursion limit.
+_RECURSION_LIMIT_LOCK = RECURSION_LIMIT_LOCK
 
 
 class Parser:
@@ -292,15 +293,6 @@ class Parser:
         return True
 
 
-def _stack_depth() -> int:
-    depth = 0
-    frame: object = sys._getframe()
-    while frame is not None:
-        depth += 1
-        frame = frame.f_back
-    return depth
-
-
 def parse(tokens: list[Token], source: str) -> Program:
     """Parse a token stream, guaranteeing E0101 rather than a RecursionError.
 
@@ -310,13 +302,5 @@ def parse(tokens: list[Token], source: str) -> Program:
     guard could fire. Reserving the frames the bound actually needs keeps the
     documented limit deterministic instead of dependent on the call site.
     """
-    with _RECURSION_LIMIT_LOCK:
-        required = MAX_EXPRESSION_DEPTH * FRAMES_PER_LEVEL + _STACK_MARGIN
-        previous_limit = sys.getrecursionlimit()
-        stack_depth = _stack_depth()
-        if previous_limit - stack_depth < required:
-            sys.setrecursionlimit(stack_depth + required)
-        try:
-            return Parser(tokens, source).parse()
-        finally:
-            sys.setrecursionlimit(previous_limit)
+    with reserved(MAX_EXPRESSION_DEPTH * FRAMES_PER_LEVEL):
+        return Parser(tokens, source).parse()
