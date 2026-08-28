@@ -1,4 +1,5 @@
 import contextlib
+import ctypes
 import io
 import os
 import signal
@@ -26,6 +27,7 @@ import check_clang_version  # noqa: E402
 
 VALID = "fn main() -> i32 {\n    return 42;\n}\n"
 ROOT = Path(__file__).parents[1]
+_EXECUTABLE_RUN_LOCK = threading.Lock()
 
 
 def require_clang() -> None:
@@ -53,13 +55,23 @@ def run_executable(path, timeout: float = 20.0) -> int:
     turns that into a hung suite rather than a failing test, and in CI into a job
     that spins until the platform kills it.
     """
-    try:
-        return subprocess.run([str(path)], timeout=timeout).returncode
-    except subprocess.TimeoutExpired:
-        raise AssertionError(
-            f"{Path(path).name} did not terminate within {timeout}s; "
-            "control flow lowering probably produced an infinite loop"
-        ) from None
+    # Windows Error Reporting can hold a deliberately trapping child open while
+    # it waits for crash UI, hiding the status this helper exists to inspect.
+    # Error mode is process-global and inherited, so serialize and restore it.
+    with _EXECUTABLE_RUN_LOCK:
+        previous_error_mode = None
+        if os.name == "nt":
+            previous_error_mode = ctypes.windll.kernel32.SetErrorMode(0x0002)
+        try:
+            return subprocess.run([str(path)], timeout=timeout).returncode
+        except subprocess.TimeoutExpired:
+            raise AssertionError(
+                f"{Path(path).name} did not terminate within {timeout}s; "
+                "control flow lowering probably produced an infinite loop"
+            ) from None
+        finally:
+            if previous_error_mode is not None:
+                ctypes.windll.kernel32.SetErrorMode(previous_error_mode)
 
 
 
