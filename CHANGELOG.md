@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0 - Unreleased
+## 0.5.0 - 2026-08-28
 
 - Added initialized mutable `var` bindings and type-checked reassignment while preserving immutable SSA `let` bindings.
 - Added lexical statement blocks, `while` statements, and early `return` with fallthrough and unreachable-code diagnostics.
