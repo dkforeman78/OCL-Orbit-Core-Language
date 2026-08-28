@@ -16,7 +16,7 @@ from compiler.diagnostics import DiagnosticError, InternalCompilerError, SourceL
 from compiler.driver import compile_source
 from compiler.lexer import lex
 from compiler.parser import parse
-from compiler.nodes import AssignmentStatement, BinaryExpression, BlockStatement, BooleanLiteral, CallExpression, Function, IdentifierExpression, IfExpression, IntegerLiteral, LetStatement, Program, ReturnStatement, UnaryExpression, VarStatement, WhileStatement
+from compiler.nodes import AssignmentStatement, BinaryExpression, BlockStatement, BooleanLiteral, BreakStatement, CallExpression, ContinueStatement, Function, IdentifierExpression, IfExpression, IntegerLiteral, LetStatement, Program, ReturnStatement, UnaryExpression, VarStatement, WhileStatement
 from compiler.semantic import analyze
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "tools"))
@@ -105,9 +105,9 @@ class FrontendTests(DiagnosticAssertions):
         source = "fn add(a: i32, b: i32) -> i32 { return a + b; }\nfn main() -> i32 { return add(1, 2,); }\n"
         self.assertDiagnostic(source, "E0100", "expected argument after ','")
 
-    def test_negative_literal_is_rejected(self):
-        # 0.3 has binary subtraction but still has no unary minus.
-        self.assertDiagnostic("fn main() -> i32 { return -1; }", "E0100", "expected expression")
+    def test_negative_literal_is_supported_from_06(self):
+        _, ir = compile_source("fn main() -> i32 { return -1 + 43; }")
+        self.assertIn("add i32 -1, 43", ir)
 
 
 class SemanticTests(DiagnosticAssertions):
@@ -676,6 +676,75 @@ class Ocl05Tests(DiagnosticAssertions):
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / ("repeat.exe" if os.name == "nt" else "repeat")
             result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(ROOT / "examples" / "repeat.ocl"), "-o", str(executable)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(run_executable(executable), 42)
+
+
+class Ocl06Tests(DiagnosticAssertions):
+    SOURCE = (ROOT / "examples" / "loop_control.ocl").read_text(encoding="utf-8")
+
+    def test_loop_control_ast(self):
+        program, _ = compile_source(self.SOURCE)
+        outer = program.functions[0].body[2]
+        self.assertIsInstance(outer, WhileStatement)
+        inner = outer.body.statements[1]
+        self.assertIsInstance(inner.body.statements[0], BreakStatement)
+        self.assertIsInstance(outer.body.statements[2], ContinueStatement)
+
+    def test_nested_loop_control_targets_the_nearest_loop(self):
+        _, ir = compile_source(self.SOURCE)
+        inner_body = ir.split("ocl.while.body.1:")[1].split("ocl.while.exit.1:")[0]
+        self.assertIn("br label %ocl.while.exit.1", inner_body)
+        outer_after_inner = ir.split("ocl.while.exit.1:")[1].split("ocl.while.exit.0:")[0]
+        self.assertIn("br label %ocl.while.condition.0", outer_after_inner)
+
+    def test_break_and_continue_require_a_loop(self):
+        self.assertDiagnostic("fn main() -> i32 { break; }", "E0218", "only valid inside while")
+        self.assertDiagnostic("fn main() -> i32 { continue; }", "E0218", "only valid inside while")
+
+    def test_statement_after_loop_control_is_unreachable(self):
+        self.assertDiagnostic("fn main() -> i32 { while true { break; return 1; } return 42; }", "E0216", "after break")
+        self.assertDiagnostic("fn main() -> i32 { while true { continue; return 1; } return 42; }", "E0216", "after continue")
+
+    def test_unary_minus_requires_i32(self):
+        self.assertDiagnostic("fn main() -> i32 { return if -true { 1 } else { 0 }; }", "E0211", "i32 operand")
+
+    def test_i32_min_literal_is_supported(self):
+        _, ir = compile_source("fn main() -> i32 { return -2147483648; }")
+        self.assertIn("ret i32 -2147483648", ir)
+
+    def test_too_negative_literal_is_rejected(self):
+        self.assertDiagnostic("fn main() -> i32 { return -2147483649; }", "E0203", "does not fit")
+
+    def test_literal_zero_divisors_are_rejected(self):
+        self.assertDiagnostic("fn main() -> i32 { return 42 / 0; }", "E0217", "division by zero")
+        self.assertDiagnostic("fn main() -> i32 { return 42 % -0; }", "E0217", "division by zero")
+
+    def test_division_and_remainder_emit_guarded_signed_operations(self):
+        _, ir = compile_source("fn f(x: i32, y: i32) -> i32 { return x / y + x % y; } fn main() -> i32 { return f(84, 2); }")
+        self.assertEqual(ir.count("call void @llvm.trap()"), 2)
+        self.assertIn("sdiv i32", ir)
+        self.assertIn("srem i32", ir)
+        self.assertIn("icmp eq i32 %y, 0", ir)
+        self.assertIn("icmp eq i32 %x, -2147483648", ir)
+
+    def test_computed_zero_and_min_overflow_take_the_trap_path(self):
+        for expression in ("42 / zero(0)", "-2147483648 / -1", "-2147483648 % -1"):
+            with self.subTest(expression=expression):
+                source = f"fn zero(x: i32) -> i32 {{ return x; }} fn main() -> i32 {{ return {expression}; }}"
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "trap.ocl"
+                    path.write_text(source, encoding="utf-8")
+                    executable = Path(directory) / ("trap.exe" if os.name == "nt" else "trap")
+                    result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotEqual(run_executable(executable, timeout=5), 0)
+
+    def test_signed_division_and_remainder_run_natively(self):
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / ("loop_control.exe" if os.name == "nt" else "loop_control")
+            result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(ROOT / "examples" / "loop_control.ocl"), "-o", str(executable)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(run_executable(executable), 42)
 

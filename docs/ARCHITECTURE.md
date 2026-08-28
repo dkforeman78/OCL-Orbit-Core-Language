@@ -8,18 +8,23 @@
 4. `codegen` lowers the validated AST to textual LLVM IR.
 5. `cli` invokes Clang for LLVM compilation and host-native linking.
 
-Direct AST-to-LLVM lowering is limited to the bootstrap. The 0.5 semantic pass first collects typed function signatures, then validates blocks in source order, allowing forward calls while making lexical visibility deterministic. Its iterative post-order expression walk acts as the prototype type checker for `i32` and `bool`. An Orbit IR layer can be inserted later without changing the lexer, parser, or command surface. Diagnostics carry stable-looking codes for tooling, but codes are provisional during 0.x.
+Direct AST-to-LLVM lowering is limited to the bootstrap. The 0.6 semantic pass first collects typed function signatures, then validates blocks in source order, allowing forward calls while making lexical visibility deterministic. Its iterative post-order expression walk acts as the prototype type checker for `i32` and `bool`. An Orbit IR layer can be inserted later without changing the lexer, parser, or command surface. Diagnostics carry stable-looking codes for tooling, but codes are provisional during 0.x.
 
 Immutable `let` locals still lower directly to LLVM SSA operands. A
 local whose initializer is a constant or parameter is an alias in the compiler's
 value environment; a computed initializer names the resulting SSA temporary.
 For `let`, no `alloca`, load, store, mutable storage, lifetime, or ABI behavior is introduced.
 
-Prototype 0.5 `var` locals use type-specific stack slots allocated once in the
+Prototype 0.6 `var` locals use type-specific stack slots allocated once in the
 entry block. Assignments store and reads load; lexical scope is enforced before
 lowering. `while` emits condition/body/exit blocks, while `&&` and `||` use
 conditional branches and `phi` nodes so their right operands genuinely short-circuit.
 These are function-local implementation details and do not change the external ABI.
+
+`break` and `continue` lower against a stack of loop condition/exit labels, so
+nesting always targets the nearest loop. Signed `/` and `%` emit explicit
+zero-and-overflow guards before LLVM `sdiv`/`srem`; invalid paths call
+`llvm.trap` and are unreachable, preventing LLVM poison from becoming accidental language behavior.
 
 Boolean values lower to LLVM `i1`. An `if` expression creates deterministic,
 compiler-reserved then/else/merge block labels, emits a conditional branch, and
@@ -78,7 +83,7 @@ approach — the CRT-free entry point must be redesigned before any of these app
 - any call into the C runtime, libc, or an imported system library;
 - any need for `argc`/`argv`, or an exit path other than returning from `main`.
 
-0.5 adds private mutable slots and loop control flow while staying inside that envelope:
+0.6 adds guarded division and nearest-loop control while staying inside that envelope:
 frames are tens of bytes and the linked binary imports nothing. Verified on the
-x86-64 host — `main` in `examples/repeat.ocl`, the 0.5 acceptance program,
+x86-64 host — `main` in `examples/loop_control.ocl`, the 0.6 acceptance program,
 allocates `0x28` bytes and calls no imported symbol.

@@ -7,8 +7,10 @@ from .nodes import (
     BinaryExpression,
     AssignmentStatement,
     BlockStatement,
+    BreakStatement,
     BooleanLiteral,
     CallExpression,
+    ContinueStatement,
     Expression,
     I32_MAX,
     IdentifierExpression,
@@ -23,7 +25,7 @@ from .nodes import (
 )
 
 SUPPORTED_TYPES = frozenset(("bool", "i32"))
-ARITHMETIC_OPERATORS = frozenset(("+", "-", "*"))
+ARITHMETIC_OPERATORS = frozenset(("+", "-", "*", "/", "%"))
 RELATIONAL_OPERATORS = frozenset(("<", "<=", ">", ">="))
 EQUALITY_OPERATORS = frozenset(("==", "!="))
 LOGICAL_OPERATORS = frozenset(("&&", "||"))
@@ -31,7 +33,7 @@ LOGICAL_OPERATORS = frozenset(("&&", "||"))
 
 def _require_known_type(type_name: str, source: str, location: SourceLocation) -> None:
     if type_name not in SUPPORTED_TYPES:
-        raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.5 supports i32 and bool", source, location)
+        raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.6 supports i32 and bool", source, location)
 
 
 def analyze(program: Program, source: str) -> None:
@@ -73,19 +75,19 @@ def _analyze(program: Program, source: str) -> None:
         parameter_names = {parameter.name for parameter in function.parameters}
         scope = {parameter.name: (parameter.type_name, False) for parameter in function.parameters}
         declared = set(parameter_names)
-        if not _analyze_statements(function.body, scope, declared, functions, function, source):
+        if _analyze_statements(function.body, scope, declared, functions, function, source) != "return":
             raise DiagnosticError("E0202", f"function '{function.name}' can reach the end without returning", source, function.location)
 
 
-def _analyze_statements(statements, scope, declared, functions, function, source) -> bool:
-    returned = False
+def _analyze_statements(statements, scope, declared, functions, function, source, loop_depth=0):
+    flow = None
     for statement in statements:
-        if returned:
-            raise DiagnosticError("E0216", "unreachable statement after return", source, statement.location)
+        if flow:
+            raise DiagnosticError("E0216", f"unreachable statement after {flow}", source, statement.location)
         if isinstance(statement, (LetStatement, VarStatement)):
             _require_known_type(statement.type_name, source, statement.location)
             if statement.name in declared:
-                raise DiagnosticError("E0210", f"name '{statement.name}' is already declared in this function; OCL 0.5 has no shadowing", source, statement.location)
+                raise DiagnosticError("E0210", f"name '{statement.name}' is already declared in this function; OCL 0.6 has no shadowing", source, statement.location)
             actual = _analyze_expression(statement.initializer, scope, functions, source)
             if actual != statement.type_name:
                 raise DiagnosticError("E0214", f"local '{statement.name}' expects {statement.type_name}, got {actual}", source, statement.location)
@@ -104,17 +106,21 @@ def _analyze_statements(statements, scope, declared, functions, function, source
             actual = _analyze_expression(statement.expression, scope, functions, source)
             if actual != function.return_type:
                 raise DiagnosticError("E0214", f"function '{function.name}' returns {function.return_type}, got {actual}", source, statement.location)
-            returned = True
+            flow = "return"
+        elif isinstance(statement, (BreakStatement, ContinueStatement)):
+            if loop_depth == 0:
+                raise DiagnosticError("E0218", f"'{type(statement).__name__.removesuffix('Statement').lower()}' is only valid inside while", source, statement.location)
+            flow = "break" if isinstance(statement, BreakStatement) else "continue"
         elif isinstance(statement, BlockStatement):
-            returned = _analyze_statements(statement.statements, dict(scope), declared, functions, function, source)
+            flow = _analyze_statements(statement.statements, dict(scope), declared, functions, function, source, loop_depth)
         elif isinstance(statement, WhileStatement):
             condition = _analyze_expression(statement.condition, scope, functions, source)
             if condition != "bool":
                 raise DiagnosticError("E0212", f"while condition must be bool, got {condition}", source, statement.condition.location)
-            _analyze_statements(statement.body.statements, dict(scope), declared, functions, function, source)
+            _analyze_statements(statement.body.statements, dict(scope), declared, functions, function, source, loop_depth + 1)
         else:
             raise InternalCompilerError(f"unsupported statement node: {type(statement).__name__}")
-    return returned
+    return flow
 
 
 def _operands(expression: Expression) -> tuple[Expression, ...]:
@@ -162,6 +168,8 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
             if node.operator in ARITHMETIC_OPERATORS:
                 if left != "i32" or right != "i32":
                     raise DiagnosticError("E0211", f"operator '{node.operator}' requires i32 operands, got {left} and {right}", source, node.location)
+                if node.operator in ("/", "%") and isinstance(node.right, IntegerLiteral) and node.right.value == 0:
+                    raise DiagnosticError("E0217", "division by zero", source, node.right.location)
                 types[id(node)] = "i32"
             elif node.operator in RELATIONAL_OPERATORS:
                 if left != "i32" or right != "i32":
@@ -199,9 +207,13 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
             types[id(node)] = then_type
         elif isinstance(node, UnaryExpression):
             operand = types[id(node.operand)]
-            if node.operator != "!" or operand != "bool":
-                raise DiagnosticError("E0211", f"operator '!' requires a bool operand, got {operand}", source, node.location)
-            types[id(node)] = "bool"
+            if node.operator == "!" and operand == "bool":
+                types[id(node)] = "bool"
+            elif node.operator == "-" and operand == "i32":
+                types[id(node)] = "i32"
+            else:
+                requirement = "bool" if node.operator == "!" else "i32"
+                raise DiagnosticError("E0211", f"operator '{node.operator}' requires a {requirement} operand, got {operand}", source, node.location)
         else:
             raise InternalCompilerError(f"unsupported expression node: {type(node).__name__}")
     return types[id(expression)]

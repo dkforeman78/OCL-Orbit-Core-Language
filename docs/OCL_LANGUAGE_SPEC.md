@@ -1,6 +1,6 @@
-# OCL Language Specification — Prototype 0.5
+# OCL Language Specification — Prototype 0.6
 
-This document describes only the implemented 0.5 subset. It is not a stability promise for later OCL releases.
+This document describes only the implemented 0.6 subset. It is not a stability promise for later OCL releases.
 
 ## Grammar
 
@@ -12,11 +12,14 @@ parameter        = identifier , ":" , type ;
 type             = "i32" | "bool" ;
 body             = block ;
 block            = "{" , { statement } , "}" ;
-statement        = let-statement | var-statement | assignment | while-statement | return-statement | block ;
+statement        = let-statement | var-statement | assignment | while-statement
+                 | break-statement | continue-statement | return-statement | block ;
 let-statement    = "let" , identifier , ":" , type , "=" , expression , ";" ;
 var-statement    = "var" , identifier , ":" , type , "=" , expression , ";" ;
 assignment       = identifier , "=" , expression , ";" ;
 while-statement  = "while" , expression , block ;
+break-statement  = "break" , ";" ;
+continue-statement = "continue" , ";" ;
 return-statement = "return" , expression , ";" ;
 expression       = logical-or ;
 logical-or       = logical-and , { "||" , logical-and } ;
@@ -24,8 +27,8 @@ logical-and      = equality , { "&&" , equality } ;
 equality         = comparison , { ( "==" | "!=" ) , comparison } ;
 comparison       = sum , { ( "<" | "<=" | ">" | ">=" ) , sum } ;
 sum              = term , { ( "+" | "-" ) , term } ;
-term             = unary , { "*" , unary } ;
-unary            = { "!" } , primary ;
+term             = unary , { ( "*" | "/" | "%" ) , unary } ;
+unary            = { "!" | "-" } , primary ;
 primary          = integer-literal | boolean-literal | call | identifier
                  | "(" , expression , ")" | if-expression ;
 boolean-literal  = "true" | "false" ;
@@ -35,7 +38,7 @@ call             = identifier , "(" , [ arguments ] , ")" ;
 arguments        = expression , { "," , expression } ;
 ```
 
-Identifiers contain ASCII letters, digits, and underscores and cannot begin with a digit. `else`, `false`, `fn`, `if`, `let`, `return`, `true`, `var`, and `while` are reserved keywords. Whitespace is insignificant. Precedence from highest to lowest is primary expressions, unary `!`, multiplication, addition/subtraction, relational comparison, equality, `&&`, then `||`. Binary operators at the same precedence are left-associative. Parentheses override precedence. Comments and negative literals are not part of 0.5; `-` is binary subtraction only.
+Identifiers contain ASCII letters, digits, and underscores and cannot begin with a digit. `break`, `continue`, `else`, `false`, `fn`, `if`, `let`, `return`, `true`, `var`, and `while` are reserved keywords. Whitespace is insignificant. Precedence from highest to lowest is primary expressions, unary `!`/`-`, multiplication/division/remainder, addition/subtraction, relational comparison, equality, `&&`, then `||`. Binary operators at the same precedence are left-associative. Parentheses override precedence. Comments are not part of 0.6.
 
 ## Semantics
 
@@ -43,6 +46,7 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
 - `let` introduces an immutable initialized binding. `var` introduces a mutable initialized binding; only `var` may be reassigned, and every assignment must preserve its declared type. Uninitialized declarations are not grammar.
 - Blocks are lexical scopes. A block-local name is unavailable after its block. Shadowing remains forbidden across an entire function, including nested blocks.
 - `while` is a statement whose condition must be `bool`. Its body may execute zero or more times. `return` may appear in any block; every function must return on every path that reaches its end, and statements after an unconditional return are rejected as unreachable.
+- `break` exits the nearest enclosing `while`; `continue` begins its next condition check. Both are rejected outside a loop, and following statements in the same block are unreachable.
 - Parameters, locals, arguments, and function results may be `i32` or `bool`; parameter names must be unique within a function.
 - Identifier expressions resolve to parameters or earlier local bindings. An initializer is analyzed before its local name enters scope, so self-reference and references to later locals are rejected.
 - Local names must be unique within a function and cannot shadow parameters.
@@ -51,11 +55,11 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
 - `main` must have no parameters.
 - `main` must return `i32`; there is no implicit conversion between `i32` and `bool`.
 - Duplicate function names are rejected.
-- Arithmetic operators require `i32` operands. Relational operators `<`, `<=`, `>`, and `>=` require `i32` operands and produce `bool`. Equality operators `==` and `!=` require matching operand types and produce `bool`.
+- Arithmetic operators require `i32` operands. Division truncates toward zero and remainder has the dividend's sign. Literal zero divisors are rejected with `E0217`; computed zero divisors and `i32::MIN / -1` deterministically trap at runtime. This trap policy is provisional for Prototype 0.6. Relational operators `<`, `<=`, `>`, and `>=` require `i32` operands and produce `bool`. Equality operators `==` and `!=` require matching operand types and produce `bool`.
 - `if` is an expression. Its condition must be `bool`, both branches must have the same type, and only the selected branch executes. `else` is mandatory.
 - `!` requires `bool`. `&&` and `||` require `bool` operands and short-circuit: the right operand is evaluated only when needed.
-- **Prototype 0.5 `i32` arithmetic wraps.** Addition, subtraction, and
-  multiplication are evaluated modulo 2^32 in two's-complement representation,
+- **Prototype 0.6 `i32` arithmetic wraps.** Addition, subtraction, multiplication, and unary negation
+  are evaluated modulo 2^32 in two's-complement representation,
   so `2147483647 + 1` is defined and equals
   `-2147483648`. The prototype never inherits C's undefined signed overflow.
   This records and tests the current implementation; it does **not** stabilize
@@ -89,4 +93,4 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
 
 ## Safety and compatibility status
 
-Prototype 0.5 has no source-level pointers, dynamic allocation, ownership, references, globals, or concurrency, so it makes no permanent memory-model decision. Mutable locals lower to private stack slots; that is an implementation detail, not a source reference model. Integer literals are range checked, and arithmetic uses the provisional, defined wrapping behavior described above. The final overflow policy, broader variable/control-flow model, textual syntax, OCL ABI, and executable format remain provisional.
+Prototype 0.6 has no source-level pointers, dynamic allocation, ownership, references, globals, or concurrency, so it makes no permanent memory-model decision. Mutable locals lower to private stack slots; that is an implementation detail, not a source reference model. Integer literals are range checked, and arithmetic uses the provisional, defined wrapping behavior described above. The final overflow policy, broader variable/control-flow model, textual syntax, OCL ABI, and executable format remain provisional.

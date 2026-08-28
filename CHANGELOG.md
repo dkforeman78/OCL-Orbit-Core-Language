@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0 - Unreleased
+
+- Added nearest-loop `break;` and `continue;` with unreachable-statement and outside-loop diagnostics.
+- Added unary integer negation, signed division, and signed remainder, including the `i32` minimum literal.
+- Added source diagnostics for literal zero divisors and deterministic runtime traps for computed zero divisors and `i32::MIN / -1` overflow.
+- Added guarded LLVM `sdiv`/`srem` control flow and the `loop_control.ocl` native acceptance program.
+
 ## 0.5.0 - 2026-08-28
 
 - Added initialized mutable `var` bindings and type-checked reassignment while preserving immutable SSA `let` bindings.
