@@ -966,6 +966,41 @@ class Ocl07Tests(DiagnosticAssertions):
         self.assertDiagnostic("fn main() -> i32 { let a: [i32; 1] = [42]; a[0] = 1; return 42; }", "E0215", "immutable")
         self.assertDiagnostic("fn main() -> i32 { var a: [i32; 1] = [42]; a[0] = true; return 42; }", "E0214", "expects i32")
 
+    def test_index_assignment_rejects_a_non_array_target(self):
+        # The write path repeats each check the read path makes. Without this
+        # one, `array` is None and the next line subscripts it, so the compiler
+        # dies with a TypeError instead of issuing a diagnostic.
+        self.assertDiagnostic(
+            "fn main() -> i32 { var x: i32 = 5; x[0] = 1; return 42; }", "E0220", "not an array")
+
+    def test_index_assignment_requires_an_i32_index(self):
+        # Without this check a bool index reaches codegen as the integer 1 and
+        # silently writes to element 1.
+        self.assertDiagnostic(
+            "fn main() -> i32 { var a: [i32; 3] = [1, 2, 3]; a[true] = 9; return 42; }",
+            "E0221", "must be i32")
+
+    def test_index_assignment_rejects_constant_out_of_bounds(self):
+        # Constant indices are a diagnostic on both paths; only computed ones
+        # are left to the runtime trap.
+        self.assertDiagnostic(
+            "fn main() -> i32 { var a: [i32; 3] = [1, 2, 3]; a[3] = 1; return 42; }",
+            "E0222", "outside length 3")
+        self.assertDiagnostic(
+            "fn main() -> i32 { var a: [i32; 3] = [1, 2, 3]; a[-1] = 1; return 42; }",
+            "E0222", "outside length 3")
+
+    def test_array_literal_elements_are_evaluated_left_to_right(self):
+        # Element initializers may call functions, so their order is observable.
+        # Reversing it keeps every stored value correct, which is exactly why an
+        # assertion on the values alone cannot see the change.
+        _, ir = compile_source(
+            "fn a(x: i32) -> i32 { return x; } fn b(x: i32) -> i32 { return x; } "
+            "fn main() -> i32 { var v: [i32; 2] = [a(1), b(2)]; return v[0] + v[1] * 20 + 1; }")
+        calls = [line.strip().split("@")[1].split("(")[0]
+                 for line in ir.splitlines() if "call i32 @" in line]
+        self.assertEqual(calls, ["a", "b"])
+
     def test_whole_array_assignment_and_equality_are_not_supported(self):
         self.assertDiagnostic("fn main() -> i32 { var a: [i32; 1] = [1]; a = [2]; return 42; }", "E0223", "whole-array")
         self.assertDiagnostic("fn main() -> i32 { let a: [i32; 1] = [1]; return if a == a { 42 } else { 0 }; }", "E0211", "does not support arrays")
