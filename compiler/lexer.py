@@ -13,6 +13,8 @@ class TokenKind(Enum):
     LET = auto()
     VAR = auto()
     WHILE = auto()
+    BREAK = auto()
+    CONTINUE = auto()
     RETURN = auto()
     TRUE = auto()
     FALSE = auto()
@@ -28,6 +30,8 @@ class TokenKind(Enum):
     PLUS = auto()
     MINUS = auto()
     STAR = auto()
+    SLASH = auto()
+    PERCENT = auto()
     EQUAL = auto()
     EQUAL_EQUAL = auto()
     BANG_EQUAL = auto()
@@ -96,6 +100,8 @@ def lex(source: str) -> list[Token]:
             "+": TokenKind.PLUS,
             "-": TokenKind.MINUS,
             "*": TokenKind.STAR,
+            "/": TokenKind.SLASH,
+            "%": TokenKind.PERCENT,
             "=": TokenKind.EQUAL,
             "<": TokenKind.LESS,
             ">": TokenKind.GREATER,
@@ -113,6 +119,8 @@ def lex(source: str) -> list[Token]:
                 end += 1
             word = source[index:end]
             kind = {
+                "break": TokenKind.BREAK,
+                "continue": TokenKind.CONTINUE,
                 "else": TokenKind.ELSE,
                 "false": TokenKind.FALSE,
                 "fn": TokenKind.FN,

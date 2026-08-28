@@ -5,8 +5,10 @@ from .nodes import (
     AssignmentStatement,
     BinaryExpression,
     BlockStatement,
+    BreakStatement,
     BooleanLiteral,
     CallExpression,
+    ContinueStatement,
     Expression,
     Function,
     IdentifierExpression,
@@ -86,7 +88,7 @@ class Parser:
         self.block_depth += 1
         if self.block_depth > MAX_BLOCK_DEPTH:
             self.block_depth -= 1
-            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.5 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
+            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.6 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
         try:
             statements: list[Statement] = []
             while not self._at(TokenKind.RIGHT_BRACE) and not self._at(TokenKind.EOF):
@@ -103,6 +105,11 @@ class Parser:
             return self._binding(True)
         if self._at(TokenKind.RETURN):
             return self._return_statement()
+        if self._at(TokenKind.BREAK) or self._at(TokenKind.CONTINUE):
+            token = self.tokens[self.current]
+            self.current += 1
+            self._expect(TokenKind.SEMICOLON, f"expected ';' after '{token.lexeme}'")
+            return BreakStatement(token.location) if token.kind is TokenKind.BREAK else ContinueStatement(token.location)
         if self._at(TokenKind.WHILE):
             start = self._expect(TokenKind.WHILE, "expected 'while'")
             condition = self._expression()
@@ -155,7 +162,7 @@ class Parser:
         if self.depth > MAX_EXPRESSION_DEPTH:
             raise DiagnosticError(
                 "E0101",
-                f"expression is nested too deeply; OCL 0.5 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                f"expression is nested too deeply; OCL 0.6 allows at most {MAX_EXPRESSION_DEPTH} levels",
                 self.source,
                 self.tokens[self.current].location,
             )
@@ -202,24 +209,30 @@ class Parser:
 
     def _term(self) -> Expression:
         expression = self._unary()
-        while self._match(TokenKind.STAR):
+        while self._match(TokenKind.STAR) or self._match(TokenKind.SLASH) or self._match(TokenKind.PERCENT):
             operator = self.tokens[self.current - 1]
             expression = BinaryExpression(expression, operator.lexeme, self._unary(), operator.location)
         return expression
 
     def _unary(self) -> Expression:
-        if self._match(TokenKind.BANG):
+        if self._match(TokenKind.BANG) or self._match(TokenKind.MINUS):
             operator = self.tokens[self.current - 1]
             self.depth += 1
             if self.depth > MAX_EXPRESSION_DEPTH:
                 self.depth -= 1
                 raise DiagnosticError(
                     "E0101",
-                    f"expression is nested too deeply; OCL 0.5 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                    f"expression is nested too deeply; OCL 0.6 allows at most {MAX_EXPRESSION_DEPTH} levels",
                     self.source,
                     operator.location,
                 )
             try:
+                if operator.kind is TokenKind.MINUS and self._at(TokenKind.INTEGER):
+                    value = self._expect(TokenKind.INTEGER, "expected integer literal")
+                    significant = value.lexeme.lstrip("0") or "0"
+                    if len(significant) > len(str(I32_MAX + 1)) or int(significant) > I32_MAX + 1:
+                        raise DiagnosticError("E0203", "integer literal does not fit in i32", self.source, value.location)
+                    return IntegerLiteral(-int(significant), operator.location)
                 return UnaryExpression(operator.lexeme, self._unary(), operator.location)
             finally:
                 self.depth -= 1

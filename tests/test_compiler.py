@@ -1,6 +1,8 @@
 import contextlib
+import ctypes
 import io
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -16,7 +18,7 @@ from compiler.diagnostics import DiagnosticError, InternalCompilerError, SourceL
 from compiler.driver import compile_source
 from compiler.lexer import lex
 from compiler.parser import parse
-from compiler.nodes import AssignmentStatement, BinaryExpression, BlockStatement, BooleanLiteral, CallExpression, Function, IdentifierExpression, IfExpression, IntegerLiteral, LetStatement, Program, ReturnStatement, UnaryExpression, VarStatement, WhileStatement
+from compiler.nodes import AssignmentStatement, BinaryExpression, BlockStatement, BooleanLiteral, BreakStatement, CallExpression, ContinueStatement, Function, IdentifierExpression, IfExpression, IntegerLiteral, LetStatement, Program, ReturnStatement, UnaryExpression, VarStatement, WhileStatement
 from compiler.semantic import analyze
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "tools"))
@@ -25,6 +27,7 @@ import check_clang_version  # noqa: E402
 
 VALID = "fn main() -> i32 {\n    return 42;\n}\n"
 ROOT = Path(__file__).parents[1]
+_EXECUTABLE_RUN_LOCK = threading.Lock()
 
 
 def require_clang() -> None:
@@ -52,13 +55,64 @@ def run_executable(path, timeout: float = 20.0) -> int:
     turns that into a hung suite rather than a failing test, and in CI into a job
     that spins until the platform kills it.
     """
-    try:
-        return subprocess.run([str(path)], timeout=timeout).returncode
-    except subprocess.TimeoutExpired:
-        raise AssertionError(
-            f"{Path(path).name} did not terminate within {timeout}s; "
-            "control flow lowering probably produced an infinite loop"
-        ) from None
+    # Windows Error Reporting can hold a deliberately trapping child open while
+    # it waits for crash UI, hiding the status this helper exists to inspect.
+    # Error mode is process-global and inherited, so serialize and restore it.
+    with _EXECUTABLE_RUN_LOCK:
+        previous_error_mode = None
+        if os.name == "nt":
+            previous_error_mode = ctypes.windll.kernel32.SetErrorMode(0x0002)
+        try:
+            return subprocess.run([str(path)], timeout=timeout).returncode
+        except subprocess.TimeoutExpired:
+            raise AssertionError(
+                f"{Path(path).name} did not terminate within {timeout}s; "
+                "control flow lowering probably produced an infinite loop"
+            ) from None
+        finally:
+            if previous_error_mode is not None:
+                ctypes.windll.kernel32.SetErrorMode(previous_error_mode)
+
+
+
+# A deliberate llvm.trap and undefined behaviour that merely happens to fault are
+# both "nonzero exit", so asserting only that cannot tell them apart. They do
+# carry distinct signatures, and the spec promises the deterministic one.
+if os.name == "nt":
+    _TRAP_EXITS = {0xC000001D}                      # STATUS_ILLEGAL_INSTRUCTION
+    _UB_FAULTS = {
+        0xC0000094: "integer divide by zero",
+        0xC0000095: "integer overflow",
+    }
+    def _exit_signature(code: int) -> int:
+        return code & 0xFFFFFFFF
+else:
+    # LLVM lowers llvm.trap to SIGTRAP on macOS and commonly SIGILL (or an
+    # abort fallback) elsewhere. Raw integer division faults remain SIGFPE.
+    _TRAP_EXITS = {-signal.SIGTRAP, -signal.SIGILL, -signal.SIGABRT}
+    _UB_FAULTS = {-signal.SIGFPE: "arithmetic fault"}
+    def _exit_signature(code: int) -> int:
+        return code
+
+
+def assert_deterministic_trap(case, exit_code: int) -> None:
+    """Assert the program stopped via the documented trap, not via raw UB.
+
+    A defeated guard lets the operands reach `sdiv`/`srem`, and the hardware
+    faults with its own status. That is still a nonzero exit, so a test that
+    only checks "not zero" passes while the trap policy has actually been lost.
+    """
+    signature = _exit_signature(exit_code)
+    if signature in _UB_FAULTS:
+        case.fail(
+            f"program stopped with {_UB_FAULTS[signature]} (0x{signature:08X}), not the "
+            "deterministic trap: the guard did not fire and the operands reached the "
+            "raw division, which is undefined behaviour"
+        )
+    case.assertIn(
+        signature, _TRAP_EXITS,
+        f"expected a deterministic trap, got exit signature 0x{signature:08X}",
+    )
 
 
 class DiagnosticAssertions(unittest.TestCase):
@@ -105,9 +159,9 @@ class FrontendTests(DiagnosticAssertions):
         source = "fn add(a: i32, b: i32) -> i32 { return a + b; }\nfn main() -> i32 { return add(1, 2,); }\n"
         self.assertDiagnostic(source, "E0100", "expected argument after ','")
 
-    def test_negative_literal_is_rejected(self):
-        # 0.3 has binary subtraction but still has no unary minus.
-        self.assertDiagnostic("fn main() -> i32 { return -1; }", "E0100", "expected expression")
+    def test_negative_literal_is_supported_from_06(self):
+        _, ir = compile_source("fn main() -> i32 { return -1 + 43; }")
+        self.assertIn("add i32 -1, 43", ir)
 
 
 class SemanticTests(DiagnosticAssertions):
@@ -676,6 +730,134 @@ class Ocl05Tests(DiagnosticAssertions):
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / ("repeat.exe" if os.name == "nt" else "repeat")
             result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(ROOT / "examples" / "repeat.ocl"), "-o", str(executable)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(run_executable(executable), 42)
+
+
+class Ocl06Tests(DiagnosticAssertions):
+    SOURCE = (ROOT / "examples" / "loop_control.ocl").read_text(encoding="utf-8")
+
+    def test_loop_control_ast(self):
+        program, _ = compile_source(self.SOURCE)
+        outer = program.functions[0].body[2]
+        self.assertIsInstance(outer, WhileStatement)
+        inner = outer.body.statements[1]
+        self.assertIsInstance(inner.body.statements[0], BreakStatement)
+        self.assertIsInstance(outer.body.statements[2], ContinueStatement)
+
+    def test_nested_loop_control_targets_the_nearest_loop(self):
+        _, ir = compile_source(self.SOURCE)
+        inner_body = ir.split("ocl.while.body.1:")[1].split("ocl.while.exit.1:")[0]
+        self.assertIn("br label %ocl.while.exit.1", inner_body)
+        outer_after_inner = ir.split("ocl.while.exit.1:")[1].split("ocl.while.exit.0:")[0]
+        self.assertIn("br label %ocl.while.condition.0", outer_after_inner)
+
+    def test_break_and_continue_require_a_loop(self):
+        self.assertDiagnostic("fn main() -> i32 { break; }", "E0218", "only valid inside while")
+        self.assertDiagnostic("fn main() -> i32 { continue; }", "E0218", "only valid inside while")
+
+    def test_statement_after_loop_control_is_unreachable(self):
+        self.assertDiagnostic("fn main() -> i32 { while true { break; return 1; } return 42; }", "E0216", "after break")
+        self.assertDiagnostic("fn main() -> i32 { while true { continue; return 1; } return 42; }", "E0216", "after continue")
+
+    def test_unary_minus_requires_i32(self):
+        self.assertDiagnostic("fn main() -> i32 { return if -true { 1 } else { 0 }; }", "E0211", "i32 operand")
+
+    def test_i32_min_literal_is_supported(self):
+        _, ir = compile_source("fn main() -> i32 { return -2147483648; }")
+        self.assertIn("ret i32 -2147483648", ir)
+
+    def test_too_negative_literal_is_rejected(self):
+        self.assertDiagnostic("fn main() -> i32 { return -2147483649; }", "E0203", "does not fit")
+
+    def test_literal_zero_divisors_are_rejected(self):
+        self.assertDiagnostic("fn main() -> i32 { return 42 / 0; }", "E0217", "division by zero")
+        self.assertDiagnostic("fn main() -> i32 { return 42 % -0; }", "E0217", "division by zero")
+
+    def test_division_and_remainder_emit_guarded_signed_operations(self):
+        _, ir = compile_source("fn f(x: i32, y: i32) -> i32 { return x / y + x % y; } fn main() -> i32 { return f(84, 2); }")
+        self.assertEqual(ir.count("call void @llvm.trap()"), 2)
+        self.assertIn("sdiv i32", ir)
+        self.assertIn("srem i32", ir)
+        self.assertIn("icmp eq i32 %y, 0", ir)
+        self.assertIn("icmp eq i32 %x, -2147483648", ir)
+
+    def test_computed_zero_and_min_overflow_take_the_trap_path(self):
+        for expression in ("42 / zero(0)", "-2147483648 / -1", "-2147483648 % -1"):
+            with self.subTest(expression=expression):
+                source = f"fn zero(x: i32) -> i32 {{ return x; }} fn main() -> i32 {{ return {expression}; }}"
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "trap.ocl"
+                    path.write_text(source, encoding="utf-8")
+                    executable = Path(directory) / ("trap.exe" if os.name == "nt" else "trap")
+                    result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    assert_deterministic_trap(self, run_executable(executable, timeout=5))
+
+    def _build_and_run(self, source: str, name: str = "case") -> int:
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / f"{name}.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / (f"{name}.exe" if os.name == "nt" else name)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return run_executable(executable, timeout=10)
+
+    def test_dividing_by_minus_one_is_not_a_trap(self):
+        # Only i32::MIN / -1 overflows. Widening the overflow test to "either
+        # operand matches" makes every division by -1 trap, which breaks working
+        # arithmetic rather than protecting it.
+        self.assertEqual(
+            self._build_and_run(
+                "fn neg(x: i32) -> i32 { return x; } "
+                "fn main() -> i32 { return (-42) / neg(-1); }", "divneg"), 42)
+        self.assertEqual(
+            self._build_and_run(
+                "fn neg(x: i32) -> i32 { return x; } "
+                "fn main() -> i32 { return 42 + ((-84) % neg(-1)); }", "remneg"), 42)
+
+    def test_minimum_divided_by_one_is_not_a_trap(self):
+        # The guard must key on the pair, not on i32::MIN alone.
+        self.assertEqual(
+            self._build_and_run(
+                "fn id(x: i32) -> i32 { return x; } "
+                "fn main() -> i32 { return ((-2147483648) / id(1)) + 2147483647 + 43; }", "minone"), 42)
+
+    def test_division_inside_a_branch_keeps_the_phi_predecessor(self):
+        # After the guard, the value is produced in the division's safe block,
+        # not in the branch's own block. A phi naming the branch label is IR
+        # LLVM rejects with "PHI node entries do not match predecessors!".
+        _, ir = compile_source(
+            "fn f(a: bool, x: i32, y: i32) -> i32 { return if a { x / y } else { 0 }; } "
+            "fn main() -> i32 { return f(true, 84, 2); }")
+        phi = next(line.strip() for line in ir.splitlines() if "= phi " in line)
+        self.assertIn("%ocl.division.safe.", phi)
+        self.assertNotIn("%ocl.if.then.", phi)
+
+    def test_division_inside_a_branch_runs_natively(self):
+        self.assertEqual(
+            self._build_and_run(
+                "fn f(a: bool, x: i32, y: i32) -> i32 { return if a { x / y } else { 0 }; } "
+                "fn main() -> i32 { return f(true, 84, 2); }", "divbranch"), 42)
+
+    def test_unary_minus_negates_a_runtime_value(self):
+        # Literal negation is folded in the parser, so only a computed operand
+        # exercises the codegen path.
+        _, ir = compile_source("fn f(x: i32) -> i32 { return -x; } fn main() -> i32 { return 42; }")
+        self.assertIn("sub i32 0, %x", ir)
+        self.assertEqual(
+            self._build_and_run(
+                "fn main() -> i32 { var a: i32 = 5; return (-a) + 47; }", "negrt"), 42)
+
+    def test_signed_division_and_remainder_run_natively(self):
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / ("loop_control.exe" if os.name == "nt" else "loop_control")
+            result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(ROOT / "examples" / "loop_control.ocl"), "-o", str(executable)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(run_executable(executable), 42)
 

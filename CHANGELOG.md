@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0 - 2026-08-28
+
+- Added nearest-loop `break;` and `continue;` with unreachable-statement and outside-loop diagnostics.
+- Added unary integer negation, signed division, and signed remainder, including the `i32` minimum literal.
+- Added source diagnostics for literal zero divisors and deterministic runtime traps for computed zero divisors and `i32::MIN / -1` overflow.
+- Added guarded LLVM `sdiv`/`srem` control flow and the `loop_control.ocl` native acceptance program.
+
+### Fixed after independent review
+
+- The trap tests now assert the deterministic trap signature rather than only a nonzero exit. A defeated guard lets operands reach `sdiv`/`srem`, and the hardware faults with its own status (`0xC0000094` divide-by-zero, `0xC0000095` overflow) instead of `llvm.trap`'s `0xC000001D`; three separate guard defects were invisible because every one of those is "not zero".
+- Covered division by `-1` with a non-`i32::MIN` dividend, and `i32::MIN / 1`. Widening the overflow test from the operand *pair* to either operand made all division by `-1` trap, breaking working arithmetic while the suite stayed green.
+- Covered the phi predecessor after a guarded division. The value is produced in the division's safe block, not the enclosing branch's block; naming the branch label yields IR LLVM rejects, and nothing placed a division inside an `if` branch.
+- Covered unary minus on a runtime operand. Literal negation is folded in the parser, so the codegen path was never exercised, and replacing the negation with an identity left the suite green.
+
+
 ## 0.5.0 - 2026-08-28
 
 - Added initialized mutable `var` bindings and type-checked reassignment while preserving immutable SSA `let` bindings.
