@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0 - Unreleased
+## 0.7.0 - 2026-08-28
 
 - Added local fixed-size `[T; N]` arrays of `i32` and `bool`, array literals, indexing, and mutable element assignment.
 - Added compile-time diagnostics for invalid array shapes and constant out-of-bounds indices.
