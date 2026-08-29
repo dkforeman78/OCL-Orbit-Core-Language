@@ -1,17 +1,19 @@
-# OCL Language Specification — Prototype 0.8
+# OCL Language Specification — Prototype 0.9
 
-This document describes only the implemented 0.8 subset. It is not a stability promise for later OCL releases.
+This document describes only the implemented 0.9 subset. It is not a stability promise for later OCL releases.
 
 ## Grammar
 
 ```ebnf
-program          = { function | struct-declaration } , EOF ;
-function         = "fn" , identifier , "(" , [ parameters ] , ")" , "->" , scalar-type , body ;
+program          = { function | struct-declaration | enum-declaration } , EOF ;
+function         = "fn" , identifier , "(" , [ parameters ] , ")" , "->" , named-type , body ;
+enum-declaration = "enum" , identifier , "{" , identifier , { "," , identifier } , [ "," ] , "}" ;
 struct-declaration = "struct" , identifier , "{" , struct-field , { "," , struct-field } , [ "," ] , "}" ;
 struct-field     = identifier , ":" , scalar-type ;
 parameters       = parameter , { "," , parameter } ;
-parameter        = identifier , ":" , scalar-type ;
+parameter        = identifier , ":" , named-type ;
 scalar-type      = "i32" | "bool" ;
+named-type       = scalar-type | identifier ;
 local-type       = scalar-type | array-type | identifier ;
 array-type       = "[" , ( "i32" | "bool" ) , ";" , integer-literal , "]" ;
 body             = block ;
@@ -35,8 +37,9 @@ comparison       = sum , { ( "<" | "<=" | ">" | ">=" ) , sum } ;
 sum              = term , { ( "+" | "-" ) , term } ;
 term             = unary , { ( "*" | "/" | "%" ) , unary } ;
 unary            = { "!" | "-" } , postfix ;
-primary          = integer-literal | boolean-literal | array-literal | struct-literal | call | identifier
-                 | "(" , expression , ")" | if-expression ;
+primary          = integer-literal | boolean-literal | array-literal | struct-literal | enum-variant | call | identifier
+                 | "(" , expression , ")" | if-expression | match-expression ;
+enum-variant     = identifier , "." , identifier ;
 array-literal    = "[" , [ expression , { "," , expression } ] , "]" ;
 struct-literal   = identifier , "{" , struct-initializer , { "," , struct-initializer } , [ "," ] , "}" ;
 struct-initializer = identifier , ":" , expression ;
@@ -44,11 +47,13 @@ postfix          = primary , { "[" , expression , "]" | "." , identifier } ;
 boolean-literal  = "true" | "false" ;
 if-expression    = "if" , expression , "{" , expression , "}"
                  , "else" , "{" , expression , "}" ;
+match-expression = "match" , expression , "{" , match-arm , { "," , match-arm } , [ "," ] , "}" ;
+match-arm        = enum-variant , "=>" , expression ;
 call             = identifier , "(" , [ arguments ] , ")" ;
 arguments        = expression , { "," , expression } ;
 ```
 
-Identifiers contain ASCII letters, digits, and underscores and cannot begin with a digit. `break`, `continue`, `else`, `false`, `fn`, `if`, `let`, `return`, `struct`, `true`, `var`, and `while` are reserved keywords. Whitespace is insignificant. Indexing and field access bind tighter than unary operators. The remaining precedence from highest to lowest is unary `!`/`-`, multiplication/division/remainder, addition/subtraction, relational comparison, equality, `&&`, then `||`. Binary operators at the same precedence are left-associative. Parentheses override precedence. Comments are not part of 0.8.
+Identifiers contain ASCII letters, digits, and underscores and cannot begin with a digit. `break`, `continue`, `else`, `enum`, `false`, `fn`, `if`, `let`, `match`, `return`, `struct`, `true`, `var`, and `while` are reserved keywords. Whitespace is insignificant. Indexing and field access bind tighter than unary operators. The remaining precedence from highest to lowest is unary `!`/`-`, multiplication/division/remainder, addition/subtraction, relational comparison, equality, `&&`, then `||`. Binary operators at the same precedence are left-associative. Parentheses override precedence. Comments are not part of 0.9.
 
 ## Semantics
 
@@ -56,10 +61,11 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
 - `let` introduces an immutable initialized binding. `var` introduces a mutable initialized binding; only `var` may be reassigned, and every assignment must preserve its declared type. Uninitialized declarations are not grammar.
 - Local fixed-size arrays use `[T; N]`, where `T` is `i32` or `bool` and Prototype 0.7 bounds `N` to 1 through 256 and total array storage in one function to 2048 bytes. Array literals must be nonempty and exactly match the declared element type and length. Arrays are local-only: they cannot be parameters or results, nested, copied, or compared. Index expressions require `i32`; constant out-of-bounds indices are diagnostics, while computed out-of-bounds indices deterministically trap. Only `var` array elements may be assigned. The storage bounds and trap policy are provisional implementation choices.
 - Structures are top-level named declarations containing 1 through 64 uniquely named `i32` or `bool` fields. Declarations are resolved independently of source order. Named-field literals must initialize every field exactly once; fields may be written in any order, and initializer expressions execute left-to-right in literal source order. Only local structure bindings exist, only `var` fields may be assigned, and structures cannot be nested, passed, returned, copied, or compared. Total local array and structure storage remains bounded to 2048 bytes per function. LLVM field order, padding, and alignment are bootstrap details rather than source ABI guarantees.
+- Enumerations are top-level nominal declarations containing 1 through 256 unique unit variants. They resolve independently of source order and may be used in parameters, results, locals, and assignments. `==` and `!=` require operands of the same enum type; arithmetic, ordering, and implicit numeric conversion are rejected. A `match` scrutinee must be an enum, must name every variant exactly once, and every arm must produce the same type. Only the selected arm executes. Payloads, wildcard and guarded arms, numeric casts, and stable discriminants are not part of 0.9.
 - Blocks are lexical scopes. A block-local name is unavailable after its block. Shadowing remains forbidden across an entire function, including nested blocks.
 - `while` is a statement whose condition must be `bool`. Its body may execute zero or more times. `return` may appear in any block; every function must return on every path that reaches its end, and statements after an unconditional return are rejected as unreachable.
 - `break` exits the nearest enclosing `while`; `continue` begins its next condition check. Both are rejected outside a loop, and following statements in the same block are unreachable.
-- Parameters, locals, arguments, and function results may be `i32` or `bool`; parameter names must be unique within a function.
+- Parameters, locals, arguments, and function results may be `i32`, `bool`, or a declared enum; parameter names must be unique within a function.
 - Identifier expressions resolve to parameters or earlier local bindings. An initializer is analyzed before its local name enters scope, so self-reference and references to later locals are rejected.
 - Local names must be unique within a function and cannot shadow parameters.
 - Function calls may refer to functions declared later in the file.
@@ -105,4 +111,4 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
 
 ## Safety and compatibility status
 
-Prototype 0.8 has no source-level pointers, dynamic allocation, ownership, references, globals, or concurrency, so it makes no permanent memory-model decision. Mutable locals, fixed arrays, and local structures lower to private stack slots; that is an implementation detail, not a source reference model. Integer literals are range checked, array accesses are guarded, and arithmetic uses the provisional, defined wrapping behavior described above. Structure layout, the final bounds and overflow policies, broader variable/control-flow model, textual syntax, OCL ABI, and executable format remain provisional.
+Prototype 0.9 has no source-level pointers, dynamic allocation, ownership, references, globals, or concurrency, so it makes no permanent memory-model decision. Mutable locals, fixed arrays, and local structures lower to private stack slots; that is an implementation detail, not a source reference model. Integer literals are range checked, array accesses are guarded, and arithmetic uses the provisional, defined wrapping behavior described above. Structure layout, enum discriminants, the final bounds and overflow policies, broader variable/control-flow model, textual syntax, OCL ABI, and executable format remain provisional.

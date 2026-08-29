@@ -20,7 +20,7 @@ from compiler.lexer import lex
 from compiler.parser import parse
 from compiler.nodes import AssignmentStatement, BinaryExpression, BlockStatement, BooleanLiteral, BreakStatement, CallExpression, ContinueStatement, Function, IdentifierExpression, IfExpression, IntegerLiteral, LetStatement, Program, ReturnStatement, UnaryExpression, VarStatement, WhileStatement
 from compiler.semantic import analyze
-from compiler.types import ArrayType, ScalarType, StructType
+from compiler.types import ArrayType, EnumType, ScalarType, StructType
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "tools"))
 import check_clang_version  # noqa: E402
@@ -1503,9 +1503,14 @@ class ExpressionDepthTests(DiagnosticAssertions):
         def peak_frames(depth, form):
             if form == "parentheses":
                 expression = "(" * depth + "42" + ")" * depth
-            else:
+                declaration = ""
+            elif form == "if":
                 expression = "if true { " * depth + "42" + " } else { 0 }" * depth
-            source = "fn main() -> i32 { return " + expression + "; }"
+                declaration = ""
+            else:
+                expression = "match E.A { E.A => " * depth + "42" + " }" * depth
+                declaration = "enum E { A } "
+            source = declaration + "fn main() -> i32 { return " + expression + "; }"
             peak = [0]
 
             def probe(frame, event, arg):
@@ -1527,7 +1532,7 @@ class ExpressionDepthTests(DiagnosticAssertions):
         # The slope between two depths, so the fixed cost of the driver and the
         # enclosing function does not distort the per-level figure.
         near, far = 40, 80
-        for form in ("parentheses", "if"):
+        for form in ("parentheses", "if", "match"):
             with self.subTest(form=form):
                 slope = (peak_frames(far, form) - peak_frames(near, form)) / (far - near)
                 self.assertLessEqual(
@@ -1817,6 +1822,133 @@ class UnknownNodeTests(unittest.TestCase):
     def test_codegen_rejects_an_unknown_node_as_an_internal_error(self):
         with self.assertRaises(InternalCompilerError):
             generate_llvm_ir(self._program())
+
+
+class Ocl09Tests(DiagnosticAssertions):
+    SOURCE = """enum Direction { North, East, South, West }
+fn value(direction: Direction) -> i32 {
+    return match direction {
+        Direction.West => -1,
+        Direction.South => 0,
+        Direction.North => 42,
+        Direction.East => 21,
+    };
+}
+fn main() -> i32 { return value(Direction.North); }
+"""
+
+    def test_enumeration_and_match_ast(self):
+        program, _ = compile_source(self.SOURCE)
+        self.assertEqual(program.enumerations[0].name, "Direction")
+        self.assertEqual([variant.name for variant in program.enumerations[0].variants], ["North", "East", "South", "West"])
+        self.assertIsInstance(program.functions[0].parameters[0].type_name, EnumType)
+
+    def test_enumeration_declaration_rules(self):
+        self.assertDiagnostic("enum Empty {} fn main() -> i32 { return 42; }", "E0233", "at least one")
+        self.assertDiagnostic("enum E { A, A } fn main() -> i32 { return 42; }", "E0233", "duplicate variant")
+        self.assertDiagnostic("enum E { A } enum E { B } fn main() -> i32 { return 42; }", "E0232", "duplicate enumeration")
+        self.assertDiagnostic("struct E { x: i32 } enum E { A } fn main() -> i32 { return 42; }", "E0232", "already declared")
+        variants = ",".join(f"V{index}" for index in range(257))
+        self.assertDiagnostic(f"enum E {{ {variants} }} fn main() -> i32 {{ return 42; }}", "E0233", "more than 256")
+
+    def test_enum_types_resolve_forward_in_signatures_and_locals(self):
+        source = "fn id(x: E) -> E { return x; } fn main() -> i32 { let x: E = id(E.A); return if x == E.A { 42 } else { 0 }; } enum E { A, B }"
+        _, ir = compile_source(source)
+        self.assertIn("define i32 @id(i32 %x)", ir)
+        self.assertIn("icmp eq i32", ir)
+
+    def test_unknown_enumeration_and_variant_are_diagnostics(self):
+        self.assertDiagnostic("fn main() -> Missing { return Missing.A; }", "E0200", "unknown type")
+        self.assertDiagnostic("enum E { A } fn main() -> i32 { let x: E = E.B; return 42; }", "E0234", "no variant")
+
+    def test_enums_are_nominal_and_only_support_equality(self):
+        self.assertDiagnostic("enum A { X } enum B { X } fn main() -> i32 { return if A.X == B.X { 42 } else { 0 }; }", "E0211", "matching operand types")
+        self.assertDiagnostic("enum E { A, B } fn main() -> i32 { return E.A + E.B; }", "E0211", "requires i32")
+        self.assertDiagnostic("enum E { A, B } fn main() -> i32 { return if E.A < E.B { 42 } else { 0 }; }", "E0211", "requires i32")
+
+    def test_match_requires_an_enum_and_matching_arm_types(self):
+        self.assertDiagnostic("fn main() -> i32 { return match 1 { E.A => 42 }; }", "E0235", "requires an enumeration")
+        self.assertDiagnostic("enum E { A, B } fn main() -> i32 { return match E.A { E.A => 42, E.B => true }; }", "E0213", "same type")
+
+    def test_match_rejects_missing_duplicate_unknown_and_wrong_enum_arms(self):
+        prefix = "enum E { A, B } enum F { A, B } fn main() -> i32 { return "
+        self.assertDiagnostic(prefix + "match E.A { E.A => 42 }; }", "E0237", "not exhaustive")
+        self.assertDiagnostic(prefix + "match E.A { E.A => 1, E.A => 2, E.B => 42 }; }", "E0236", "duplicate match arm")
+        self.assertDiagnostic(prefix + "match E.A { E.A => 1, E.C => 2, E.B => 42 }; }", "E0234", "no variant")
+        self.assertDiagnostic(prefix + "match E.A { E.A => 1, F.B => 42 }; }", "E0236", "must name enumeration 'E'")
+
+    def test_mutable_enumeration_assignment_runs_natively(self):
+        require_clang()
+        source = "enum E { A, B } fn main() -> i32 { var x: E = E.A; x = E.B; return match x { E.A => 0, E.B => 42 }; }"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mutable_enum.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / ("mutable_enum.exe" if os.name == "nt" else "mutable_enum")
+            result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(run_executable(executable), 42)
+
+    def test_match_scrutinee_must_be_an_enumeration(self):
+        # Without this check the analyzer keeps a None enumeration and the next
+        # line reads .variants off it, so the compiler dies with an
+        # AttributeError instead of reporting E0235.
+        self.assertDiagnostic(
+            "fn main() -> i32 { var n: i32 = 0; return match n { }; }",
+            "E0235", "requires an enumeration")
+        self.assertDiagnostic(
+            "fn main() -> i32 { return match true { }; }", "E0235", "requires an enumeration")
+        self.assertDiagnostic(
+            "struct S { f: i32 } fn main() -> i32 { var s: S = S { f: 1 }; return match s { }; }",
+            "E0235", "requires an enumeration")
+
+    def test_match_switch_defaults_to_an_invalid_discriminant_trap(self):
+        # The architecture overview states the lowering includes an unreachable
+        # invalid-discriminant trap. Exhaustiveness makes it unreachable for any
+        # well-typed program, so only the emitted shape can hold it in place.
+        _, ir = compile_source(
+            "enum A { X, Y } fn f(a: A) -> i32 { return match a { A.X => 1, A.Y => 2 }; } "
+            "fn main() -> i32 { return 42; }")
+        switch = next(line for line in ir.splitlines() if "switch i32" in line)
+        invalid = switch.split("label %")[1].strip().rstrip(" [")
+        self.assertIn("ocl.match.invalid", invalid)
+        body = ir.split(f"{invalid}:")[1]
+        self.assertTrue(body.lstrip().startswith("call void @llvm.trap()"), body[:80])
+        self.assertIn("unreachable", body.split("ocl.match.arm0")[0])
+
+    def test_match_lowers_to_switch_with_correct_phi_predecessors(self):
+        _, ir = compile_source(self.SOURCE)
+        self.assertIn("switch i32 %d", ir)
+        phi = next(line for line in ir.splitlines() if " = phi i32 " in line and "42" in line)
+        for index in range(4):
+            self.assertIn(f"%ocl.match.arm{index}.0", phi)
+
+    def test_only_the_selected_match_arm_executes(self):
+        require_clang()
+        source = "enum E { A, B } fn spin() -> i32 { while true {} return 0; } fn main() -> i32 { return match E.A { E.A => 42, E.B => spin() }; }"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lazy_match.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / ("lazy_match.exe" if os.name == "nt" else "lazy_match")
+            result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(run_executable(executable), 42)
+
+    def test_nested_control_flow_records_the_real_match_phi_predecessor(self):
+        source = "enum E { A, B } fn main() -> i32 { return match E.A { E.A => if true { 42 } else { 0 }, E.B => 1 }; }"
+        _, ir = compile_source(source)
+        match_phi = next(line for line in ir.splitlines() if " = phi i32 " in line and "%ocl.match" in line)
+        self.assertIn("%ocl.if.merge.", match_phi)
+        self.assertNotIn("[42, %ocl.match.arm0.", match_phi)
+
+    def test_ninth_milestone_native_exit_value(self):
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "enums.ocl"
+            path.write_text(self.SOURCE, encoding="utf-8")
+            executable = Path(directory) / ("enums.exe" if os.name == "nt" else "enums")
+            result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(run_executable(executable), 42)
 
 
 class OverflowSemanticsTests(unittest.TestCase):

@@ -16,6 +16,8 @@ class TokenKind(Enum):
     BREAK = auto()
     CONTINUE = auto()
     STRUCT = auto()
+    ENUM = auto()
+    MATCH = auto()
     RETURN = auto()
     TRUE = auto()
     FALSE = auto()
@@ -28,6 +30,7 @@ class TokenKind(Enum):
     LEFT_BRACKET = auto()
     RIGHT_BRACKET = auto()
     ARROW = auto()
+    FAT_ARROW = auto()
     COLON = auto()
     COMMA = auto()
     PLUS = auto()
@@ -81,6 +84,7 @@ def lex(source: str) -> list[Token]:
         start = location()
         compound = {
             "->": TokenKind.ARROW,
+            "=>": TokenKind.FAT_ARROW,
             "==": TokenKind.EQUAL_EQUAL,
             "!=": TokenKind.BANG_EQUAL,
             "<=": TokenKind.LESS_EQUAL,
@@ -129,6 +133,8 @@ def lex(source: str) -> list[Token]:
                 "break": TokenKind.BREAK,
                 "continue": TokenKind.CONTINUE,
                 "struct": TokenKind.STRUCT,
+                "enum": TokenKind.ENUM,
+                "match": TokenKind.MATCH,
                 "else": TokenKind.ELSE,
                 "false": TokenKind.FALSE,
                 "fn": TokenKind.FN,

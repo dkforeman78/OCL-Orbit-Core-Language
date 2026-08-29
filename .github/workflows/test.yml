@@ -39,7 +39,7 @@ jobs:
           OCL_REQUIRE_CLANG: "1"
         run: python -m unittest discover -s tests -v
 
-      # Preserve earlier contracts and prove the 0.8 structures milestone.
+      # Preserve earlier contracts and prove the 0.9 enums/match milestone.
       - name: Acceptance tests
         shell: bash
         run: |
@@ -51,8 +51,9 @@ jobs:
           python oclc.py build examples/loop_control.ocl
           python oclc.py build examples/arrays.ocl
           python oclc.py build examples/structures.ocl
+          python oclc.py build examples/enums.ocl
           if [ "$RUNNER_OS" = "Windows" ]; then suffix=.exe; else suffix=; fi
-          for program in hello add local decisions repeat loop_control arrays structures; do
+          for program in hello add local decisions repeat loop_control arrays structures enums; do
             exe="examples/${program}${suffix}"
             set +e
             "./$exe"

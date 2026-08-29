@@ -25,3 +25,10 @@ class StructType(TypeRef):
         value = str.__new__(cls, name)
         value.name = name
         return value
+
+
+class EnumType(TypeRef):
+    def __new__(cls, name: str):
+        value = str.__new__(cls, name)
+        value.name = name
+        return value

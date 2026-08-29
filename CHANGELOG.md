@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.0 - 2026-08-29
+
+- Added top-level nominal enumerations with one through 256 unit variants.
+- Added enum values in parameters, results, locals, assignments, and strict same-enum equality.
+- Added exhaustive `match` expressions with duplicate, unknown, mismatched, and missing-arm diagnostics.
+- Lowered enums provisionally as LLVM `i32` values and matches as `switch` control flow with typed `phi` merges.
+- Added the `enums.ocl` native acceptance program.
+
+### Fixed after independent review
+
+- Covered the non-enumeration `match` scrutinee guard. Without it the analyzer keeps a `None` enumeration and reads `.variants` off it, so `match n { }` on an `i32` kills the compiler with an `AttributeError` instead of reporting `E0235`.
+- Covered the invalid-discriminant trap that the architecture overview documents as part of the lowering. Exhaustiveness makes that block unreachable for any well-typed program, so nothing but the emitted shape can hold it in place; both retargeting the switch default and deleting the trap call left the suite green.
+
+
 ## 0.8.0 - 2026-08-28
 
 - Added top-level named structures with `i32` and `bool` fields.
