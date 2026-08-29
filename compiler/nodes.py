@@ -223,6 +223,14 @@ class EnumDeclaration:
 
 
 @dataclass(frozen=True)
+class ConstDeclaration:
+    name: str
+    type_name: TypeRef
+    initializer: Expression
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
 class Function:
     name: str
     return_type: str
@@ -236,3 +244,4 @@ class Program:
     functions: tuple[Function, ...]
     structures: tuple[StructDeclaration, ...] = ()
     enumerations: tuple[EnumDeclaration, ...] = ()
+    constants: tuple[ConstDeclaration, ...] = ()

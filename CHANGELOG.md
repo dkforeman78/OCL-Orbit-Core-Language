@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.0 - Unreleased
+
+- Added top-level typed compile-time constants for `i32`, `bool`, and declared enum types.
+- Added declaration-order-independent constant references with cycle, duplicate, type, and invalid-expression diagnostics.
+- Added compile-time arithmetic, comparison, equality, logic, `if`, and exhaustive `match` evaluation using the prototype's defined integer semantics.
+- Folded constants directly into LLVM operands without global storage, runtime initialization, or linker symbols.
+- Added the `constants.ocl` native acceptance program.
+
 ## 0.9.0 - 2026-08-29
 
 - Added top-level nominal enumerations with one through 256 unit variants.

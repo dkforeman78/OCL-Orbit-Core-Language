@@ -10,6 +10,7 @@ from .nodes import (
     BooleanLiteral,
     CallExpression,
     ContinueStatement,
+    ConstDeclaration,
     Expression,
     Function,
     IdentifierExpression,
@@ -90,14 +91,27 @@ class Parser:
         functions: list[Function] = []
         structures: list[StructDeclaration] = []
         enumerations: list[EnumDeclaration] = []
+        constants: list[ConstDeclaration] = []
         while not self._at(TokenKind.EOF):
             if self._at(TokenKind.STRUCT):
                 structures.append(self._struct_declaration())
             elif self._at(TokenKind.ENUM):
                 enumerations.append(self._enum_declaration())
+            elif self._at(TokenKind.CONST):
+                constants.append(self._const_declaration())
             else:
                 functions.append(self._function())
-        return Program(tuple(functions), tuple(structures), tuple(enumerations))
+        return Program(tuple(functions), tuple(structures), tuple(enumerations), tuple(constants))
+
+    def _const_declaration(self) -> ConstDeclaration:
+        start = self._expect(TokenKind.CONST, "expected 'const'")
+        name = self._expect(TokenKind.IDENTIFIER, "expected constant name")
+        self._expect(TokenKind.COLON, "expected ':' after constant name")
+        type_name = self._type_name("expected constant type")
+        self._expect(TokenKind.EQUAL, "expected '=' before constant initializer")
+        initializer = self._expression()
+        self._expect(TokenKind.SEMICOLON, "expected ';' after constant declaration")
+        return ConstDeclaration(name.lexeme, type_name, initializer, start.location)
 
     def _enum_declaration(self) -> EnumDeclaration:
         start = self._expect(TokenKind.ENUM, "expected 'enum'")
@@ -143,7 +157,7 @@ class Parser:
         self.block_depth += 1
         if self.block_depth > MAX_BLOCK_DEPTH:
             self.block_depth -= 1
-            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.9 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
+            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.10 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
         try:
             statements: list[Statement] = []
             while not self._at(TokenKind.RIGHT_BRACE) and not self._at(TokenKind.EOF):
@@ -242,7 +256,7 @@ class Parser:
         if self.depth > MAX_EXPRESSION_DEPTH:
             raise DiagnosticError(
                 "E0101",
-                f"expression is nested too deeply; OCL 0.9 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                f"expression is nested too deeply; OCL 0.10 allows at most {MAX_EXPRESSION_DEPTH} levels",
                 self.source,
                 self.tokens[self.current].location,
             )
@@ -302,7 +316,7 @@ class Parser:
                 self.depth -= 1
                 raise DiagnosticError(
                     "E0101",
-                    f"expression is nested too deeply; OCL 0.9 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                    f"expression is nested too deeply; OCL 0.10 allows at most {MAX_EXPRESSION_DEPTH} levels",
                     self.source,
                     operator.location,
                 )
