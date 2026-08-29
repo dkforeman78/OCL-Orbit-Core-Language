@@ -8,6 +8,13 @@
 - Folded constants directly into LLVM operands without global storage, runtime initialization, or linker symbols.
 - Added the `constants.ocl` native acceptance program.
 
+### Fixed after independent review
+
+- Constant folding no longer recurses over an initializer's AST. Binary chains are folded iteratively by the parser, so an initializer's depth is bounded only by the source; a 1000-term chain in a `const` raised an uncaught `RecursionError` while the identical expression in a function body compiled, because the analysis and lowering walks are already iterative. `if`, `match`, `&&` and `||` still evaluate only the operand they select.
+- Covered compile-time wrapping. Without it an overflowing constant folds to an out-of-range value and is emitted as a literal LLVM silently truncates.
+- Covered compile-time short-circuiting. The skipped operand would raise `E0217` if it were folded, so accepting those programs is the only observable evidence that the operand is skipped.
+
+
 ## 0.9.0 - 2026-08-29
 
 - Added top-level nominal enumerations with one through 256 unit variants.

@@ -539,52 +539,115 @@ def _evaluate_constants(program: Program, source: str | None = None) -> dict[str
         values[name] = (value, declaration.type_name)
         return values[name]
 
-    def evaluate(node):
-        if isinstance(node, BooleanLiteral):
-            return node.value, ScalarType("bool")
-        if isinstance(node, IntegerLiteral):
-            return node.value, ScalarType("i32")
-        if isinstance(node, IdentifierExpression):
-            return resolve(node.name, node.location)
-        if isinstance(node, EnumVariantExpression):
-            enumeration = enumerations[node.enum_name]
-            ordinal = next(index for index, variant in enumerate(enumeration.variants) if variant.name == node.variant)
-            return ordinal, EnumType(node.enum_name)
-        if isinstance(node, UnaryExpression):
-            operand, type_name = evaluate(node.operand)
-            return ((not operand), ScalarType("bool")) if node.operator == "!" else (wrap(-operand), ScalarType("i32"))
-        if isinstance(node, IfExpression):
-            condition, _ = evaluate(node.condition)
-            return evaluate(node.then_expression if condition else node.else_expression)
-        if isinstance(node, MatchExpression):
-            ordinal, enum_type = evaluate(node.scrutinee)
-            enumeration = enumerations[str(enum_type)]
-            selected = enumeration.variants[ordinal].name
-            return evaluate(next(arm.expression for arm in node.arms if arm.variant == selected))
-        if isinstance(node, BinaryExpression):
-            left, left_type = evaluate(node.left)
-            if node.operator == "&&" and not left:
-                return False, ScalarType("bool")
-            if node.operator == "||" and left:
-                return True, ScalarType("bool")
-            right, right_type = evaluate(node.right)
-            if node.operator == "+": return wrap(left + right), ScalarType("i32")
-            if node.operator == "-": return wrap(left - right), ScalarType("i32")
-            if node.operator == "*": return wrap(left * right), ScalarType("i32")
-            if node.operator in ("/", "%"):
-                if right == 0 or (left == -2147483648 and right == -1):
-                    fail("E0217", "invalid division in compile-time constant", node.location)
-                quotient = (abs(left) // abs(right)) * (-1 if (left < 0) != (right < 0) else 1)
-                return (quotient if node.operator == "/" else left - quotient * right), ScalarType("i32")
-            if node.operator == "<": return left < right, ScalarType("bool")
-            if node.operator == "<=": return left <= right, ScalarType("bool")
-            if node.operator == ">": return left > right, ScalarType("bool")
-            if node.operator == ">=": return left >= right, ScalarType("bool")
-            if node.operator == "==": return left == right, ScalarType("bool")
-            if node.operator == "!=": return left != right, ScalarType("bool")
-            if node.operator == "&&": return bool(right), ScalarType("bool")
-            if node.operator == "||": return bool(right), ScalarType("bool")
-        fail("E0240", f"unsupported compile-time expression {type(node).__name__}", node.location)
+    def apply_unary(node, operand):
+        if node.operator == "!":
+            return (not operand), ScalarType("bool")
+        return wrap(-operand), ScalarType("i32")
+
+    def apply_binary(node, left, right):
+        operator = node.operator
+        if operator == "+": return wrap(left + right), ScalarType("i32")
+        if operator == "-": return wrap(left - right), ScalarType("i32")
+        if operator == "*": return wrap(left * right), ScalarType("i32")
+        if operator in ("/", "%"):
+            if right == 0 or (left == -2147483648 and right == -1):
+                fail("E0217", "invalid division in compile-time constant", node.location)
+            quotient = (abs(left) // abs(right)) * (-1 if (left < 0) != (right < 0) else 1)
+            return (quotient if operator == "/" else left - quotient * right), ScalarType("i32")
+        if operator == "<": return left < right, ScalarType("bool")
+        if operator == "<=": return left <= right, ScalarType("bool")
+        if operator == ">": return left > right, ScalarType("bool")
+        if operator == ">=": return left >= right, ScalarType("bool")
+        if operator == "==": return left == right, ScalarType("bool")
+        if operator == "!=": return left != right, ScalarType("bool")
+        if operator in ("&&", "||"): return bool(right), ScalarType("bool")
+        fail("E0240", f"unsupported compile-time operator {operator}", node.location)
+
+    def evaluate(root):
+        """Fold one constant initializer without recursing over its AST.
+
+        Binary chains are folded iteratively by the parser, so an initializer's
+        AST depth is bounded only by the length of the source expression, not by
+        MAX_EXPRESSION_DEPTH. Recursing here made a long chain a RecursionError
+        while the identical expression in a function body compiled, because the
+        runtime analysis and lowering walks are already iterative.
+
+        `if`, `match`, `&&` and `||` still evaluate only the operand they
+        select, so a skipped branch cannot raise a diagnostic of its own.
+        """
+        results: dict[int, tuple[object, object]] = {}
+        pending: list[tuple[object, str]] = [(root, "visit")]
+        while pending:
+            node, stage = pending.pop()
+            if stage == "visit":
+                if isinstance(node, BooleanLiteral):
+                    results[id(node)] = (node.value, ScalarType("bool"))
+                elif isinstance(node, IntegerLiteral):
+                    results[id(node)] = (node.value, ScalarType("i32"))
+                elif isinstance(node, IdentifierExpression):
+                    results[id(node)] = resolve(node.name, node.location)
+                elif isinstance(node, EnumVariantExpression):
+                    enumeration = enumerations[node.enum_name]
+                    ordinal = next(index for index, variant in enumerate(enumeration.variants)
+                                   if variant.name == node.variant)
+                    results[id(node)] = (ordinal, EnumType(node.enum_name))
+                elif isinstance(node, UnaryExpression):
+                    pending.append((node, "unary"))
+                    pending.append((node.operand, "visit"))
+                elif isinstance(node, IfExpression):
+                    pending.append((node, "if"))
+                    pending.append((node.condition, "visit"))
+                elif isinstance(node, MatchExpression):
+                    pending.append((node, "match"))
+                    pending.append((node.scrutinee, "visit"))
+                elif isinstance(node, BinaryExpression):
+                    if node.operator in ("&&", "||"):
+                        pending.append((node, "logical"))
+                        pending.append((node.left, "visit"))
+                    else:
+                        pending.append((node, "binary"))
+                        pending.append((node.right, "visit"))
+                        pending.append((node.left, "visit"))
+                else:
+                    fail("E0240", f"unsupported compile-time expression {type(node).__name__}", node.location)
+                continue
+
+            if stage == "unary":
+                operand, _ = results[id(node.operand)]
+                results[id(node)] = apply_unary(node, operand)
+            elif stage == "binary":
+                left, _ = results[id(node.left)]
+                right, _ = results[id(node.right)]
+                results[id(node)] = apply_binary(node, left, right)
+            elif stage == "logical":
+                left, _ = results[id(node.left)]
+                if node.operator == "&&" and not left:
+                    results[id(node)] = (False, ScalarType("bool"))
+                elif node.operator == "||" and left:
+                    results[id(node)] = (True, ScalarType("bool"))
+                else:
+                    pending.append((node, "logical-right"))
+                    pending.append((node.right, "visit"))
+            elif stage == "logical-right":
+                right, _ = results[id(node.right)]
+                results[id(node)] = (bool(right), ScalarType("bool"))
+            elif stage == "if":
+                condition, _ = results[id(node.condition)]
+                chosen = node.then_expression if condition else node.else_expression
+                pending.append((node, ("select", chosen)))
+                pending.append((chosen, "visit"))
+            elif stage == "match":
+                ordinal, enum_type = results[id(node.scrutinee)]
+                enumeration = enumerations[str(enum_type)]
+                selected = enumeration.variants[ordinal].name
+                chosen = next(arm.expression for arm in node.arms if arm.variant == selected)
+                pending.append((node, ("select", chosen)))
+                pending.append((chosen, "visit"))
+            elif isinstance(stage, tuple) and stage[0] == "select":
+                results[id(node)] = results[id(stage[1])]
+            else:
+                fail("E0240", f"unsupported compile-time state {stage}", node.location)
+        return results[id(root)]
 
     for constant in program.constants:
         resolve(constant.name, constant.location)

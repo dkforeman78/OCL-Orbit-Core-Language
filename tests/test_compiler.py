@@ -2018,6 +2018,61 @@ fn main() -> i32 { return choose(DEFAULT_MODE); }
         self.assertDiagnostic("const A: i32 = 1 / 0; fn main() -> i32 { return A; }", "E0217", "division by zero")
         self.assertDiagnostic("const A: i32 = -2147483648 / -1; fn main() -> i32 { return A; }", "E0217", "invalid division")
 
+    def test_long_constant_chain_folds_without_recursing(self):
+        # Binary chains are folded iteratively by the parser, so an initializer's
+        # AST depth is bounded only by the source. The identical expression in a
+        # function body already compiled, because the analysis and lowering walks
+        # are iterative; folding it recursively made a constant a RecursionError.
+        terms = 20000
+        source = "const C: i32 = " + "+".join(["1"] * terms) + "; fn main() -> i32 { return 42; }"
+        program, _ = compile_source(source)
+        self.assertEqual(len(program.constants), 1)
+
+    def test_long_constant_chain_folds_from_a_deep_caller(self):
+        terms = 5000
+        source = "const C: i32 = " + "+".join(["1"] * terms) + "; fn main() -> i32 { return 42; }"
+
+        def deepen(remaining, action):
+            if remaining == 0:
+                return action()
+            return deepen(remaining - 1, action)
+
+        for caller_depth in (0, 400, 800):
+            with self.subTest(caller_depth=caller_depth):
+                program, _ = deepen(caller_depth, lambda: compile_source(source))
+                self.assertEqual(len(program.constants), 1)
+
+    def test_constant_arithmetic_wraps_like_runtime_arithmetic(self):
+        # Without wrapping the folded value leaves i32 range and is emitted as an
+        # out-of-range literal, which LLVM silently truncates.
+        _, ir = compile_source("const V: i32 = 2147483647 + 1; fn main() -> i32 { return V; }")
+        self.assertIn("ret i32 -2147483648", ir)
+        _, ir = compile_source("const V: i32 = -2147483648 - 1; fn main() -> i32 { return V; }")
+        self.assertIn("ret i32 2147483647", ir)
+        _, ir = compile_source("const V: i32 = 2147483647 * 2; fn main() -> i32 { return V; }")
+        self.assertIn("ret i32 -2", ir)
+
+    def test_constant_logical_operators_skip_the_unused_operand(self):
+        # The skipped operand would raise E0217 if it were folded, so accepting
+        # these programs is the only observable evidence of short-circuiting.
+        for source in (
+            "const Z: i32 = 0; const A: bool = false && ((1 / Z) == 0); "
+            "fn main() -> i32 { return if A { 0 } else { 42 }; }",
+            "const Z: i32 = 0; const A: bool = true || ((1 / Z) == 0); "
+            "fn main() -> i32 { return if A { 42 } else { 0 }; }",
+            "const Z: i32 = 0; const A: i32 = if true { 42 } else { 1 / Z }; "
+            "fn main() -> i32 { return A; }",
+            "enum E { X, Y } const Z: i32 = 0; "
+            "const A: i32 = match E.X { E.X => 42, E.Y => 1 / Z }; fn main() -> i32 { return A; }",
+        ):
+            with self.subTest(source=source[:40]):
+                program, _ = compile_source(source)
+                self.assertTrue(program.constants)
+        # ...but the operand is folded when it is actually needed.
+        self.assertDiagnostic(
+            "const Z: i32 = 0; const A: bool = true && ((1 / Z) == 0); fn main() -> i32 { return 42; }",
+            "E0217", "invalid division")
+
     def test_compile_time_division_and_remainder_truncate_toward_zero(self):
         source = "const Q: i32 = -7 / 2; const R: i32 = -7 % 2; fn main() -> i32 { return Q * 10 + R + 73; }"
         _, ir = compile_source(source)
