@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 - Unreleased
+## 0.9.0 - 2026-08-29
 
 - Added top-level nominal enumerations with one through 256 unit variants.
 - Added enum values in parameters, results, locals, assignments, and strict same-enum equality.
