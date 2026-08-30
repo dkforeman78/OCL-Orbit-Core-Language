@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.0 - Unreleased
+## 0.10.0 - 2026-08-30
 
 - Added top-level typed compile-time constants for `i32`, `bool`, and declared enum types.
 - Added declaration-order-independent constant references with cycle, duplicate, type, and invalid-expression diagnostics.
