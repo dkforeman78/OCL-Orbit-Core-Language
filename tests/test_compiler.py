@@ -1951,6 +1951,159 @@ fn main() -> i32 { return value(Direction.North); }
             self.assertEqual(run_executable(executable), 42)
 
 
+class Ocl10Tests(DiagnosticAssertions):
+    SOURCE = """enum Mode { Slow, Fast }
+const BASE: i32 = 40;
+const ANSWER: i32 = BASE + 2;
+const ENABLED: bool = true;
+const DEFAULT_MODE: Mode = Mode.Fast;
+fn choose(mode: Mode) -> i32 {
+    return match mode { Mode.Fast => if ENABLED { ANSWER } else { 0 }, Mode.Slow => 1 };
+}
+fn main() -> i32 { return choose(DEFAULT_MODE); }
+"""
+
+    def test_constants_parse_and_fold_without_storage(self):
+        program, ir = compile_source(self.SOURCE)
+        self.assertEqual([constant.name for constant in program.constants], ["BASE", "ANSWER", "ENABLED", "DEFAULT_MODE"])
+        self.assertIn("call i32 @choose(i32 1)", ir)
+        self.assertIn("[42, %ocl.if.then.", ir)
+        self.assertNotIn("@BASE", ir)
+        self.assertNotIn("@ANSWER", ir)
+        self.assertNotIn("global", ir)
+        self.assertNotIn("constant", ir)
+
+    def test_constant_resolution_is_declaration_order_independent(self):
+        _, ir = compile_source("const A: i32 = B + 2; const B: i32 = 40; fn main() -> i32 { return A; }")
+        self.assertIn("ret i32 42", ir)
+
+    def test_duplicate_cycles_and_unknown_references_are_diagnostics(self):
+        self.assertDiagnostic("const A: i32 = 1; const A: i32 = 2; fn main() -> i32 { return 42; }", "E0238", "duplicate constant")
+        self.assertDiagnostic("const A: i32 = B; const B: i32 = A; fn main() -> i32 { return 42; }", "E0239", "A -> B -> A")
+        self.assertDiagnostic("const A: i32 = Missing; fn main() -> i32 { return 42; }", "E0206", "unknown constant")
+        declarations = " ".join(f"const C{index}: i32 = {index};" for index in range(257))
+        self.assertDiagnostic(declarations + " fn main() -> i32 { return 42; }", "E0238", "at most 256")
+
+    def test_constant_count_boundary_is_exact(self):
+        declarations = " ".join(f"const C{index}: i32 = {index};" for index in range(256))
+        _, ir = compile_source(declarations + " fn main() -> i32 { return C42; }")
+        self.assertIn("ret i32 42", ir)
+
+    def test_maximum_constant_chain_survives_a_deep_caller_stack(self):
+        declarations = ["const C0: i32 = 42;"]
+        declarations.extend(f"const C{index}: i32 = C{index - 1};" for index in range(1, 256))
+        source = " ".join(declarations) + " fn main() -> i32 { return C255; }"
+
+        def deepen(remaining, action):
+            if remaining == 0:
+                return action()
+            return deepen(remaining - 1, action)
+
+        _, ir = deepen(800, lambda: compile_source(source))
+        self.assertIn("ret i32 42", ir)
+
+    def test_constant_types_are_strict(self):
+        self.assertDiagnostic("const A: i32 = true; fn main() -> i32 { return 42; }", "E0214", "expects i32")
+        self.assertDiagnostic("const A: bool = 1; fn main() -> i32 { return 42; }", "E0214", "expects bool")
+        self.assertDiagnostic("enum A { X } enum B { X } const C: A = B.X; fn main() -> i32 { return 42; }", "E0214", "expects A")
+
+    def test_constant_expressions_reject_runtime_and_aggregate_operations(self):
+        self.assertDiagnostic("fn f() -> i32 { return 1; } const A: i32 = f(); fn main() -> i32 { return A; }", "E0240", "CallExpression")
+        self.assertDiagnostic("const A: i32 = [1][0]; fn main() -> i32 { return A; }", "E0240", "IndexExpression")
+        self.assertDiagnostic("struct S { x: i32 } const A: S = S { x: 1 }; fn main() -> i32 { return 42; }", "E0200", "unknown type")
+
+    def test_wrapping_and_guarded_arithmetic_are_evaluated_at_compile_time(self):
+        _, ir = compile_source("const A: i32 = 2147483647 + 1 + 2147483647 + 43; fn main() -> i32 { return A; }")
+        self.assertIn("ret i32 42", ir)
+        self.assertDiagnostic("const A: i32 = 1 / 0; fn main() -> i32 { return A; }", "E0217", "division by zero")
+        self.assertDiagnostic("const A: i32 = -2147483648 / -1; fn main() -> i32 { return A; }", "E0217", "invalid division")
+
+    def test_long_constant_chain_folds_without_recursing(self):
+        # Binary chains are folded iteratively by the parser, so an initializer's
+        # AST depth is bounded only by the source. The identical expression in a
+        # function body already compiled, because the analysis and lowering walks
+        # are iterative; folding it recursively made a constant a RecursionError.
+        terms = 20000
+        source = "const C: i32 = " + "+".join(["1"] * terms) + "; fn main() -> i32 { return 42; }"
+        program, _ = compile_source(source)
+        self.assertEqual(len(program.constants), 1)
+
+    def test_long_constant_chain_folds_from_a_deep_caller(self):
+        terms = 5000
+        source = "const C: i32 = " + "+".join(["1"] * terms) + "; fn main() -> i32 { return 42; }"
+
+        def deepen(remaining, action):
+            if remaining == 0:
+                return action()
+            return deepen(remaining - 1, action)
+
+        for caller_depth in (0, 400, 800):
+            with self.subTest(caller_depth=caller_depth):
+                program, _ = deepen(caller_depth, lambda: compile_source(source))
+                self.assertEqual(len(program.constants), 1)
+
+    def test_constant_arithmetic_wraps_like_runtime_arithmetic(self):
+        # Without wrapping the folded value leaves i32 range and is emitted as an
+        # out-of-range literal, which LLVM silently truncates.
+        _, ir = compile_source("const V: i32 = 2147483647 + 1; fn main() -> i32 { return V; }")
+        self.assertIn("ret i32 -2147483648", ir)
+        _, ir = compile_source("const V: i32 = -2147483648 - 1; fn main() -> i32 { return V; }")
+        self.assertIn("ret i32 2147483647", ir)
+        _, ir = compile_source("const V: i32 = 2147483647 * 2; fn main() -> i32 { return V; }")
+        self.assertIn("ret i32 -2", ir)
+
+    def test_constant_logical_operators_skip_the_unused_operand(self):
+        # The skipped operand would raise E0217 if it were folded, so accepting
+        # these programs is the only observable evidence of short-circuiting.
+        for source in (
+            "const Z: i32 = 0; const A: bool = false && ((1 / Z) == 0); "
+            "fn main() -> i32 { return if A { 0 } else { 42 }; }",
+            "const Z: i32 = 0; const A: bool = true || ((1 / Z) == 0); "
+            "fn main() -> i32 { return if A { 42 } else { 0 }; }",
+            "const Z: i32 = 0; const A: i32 = if true { 42 } else { 1 / Z }; "
+            "fn main() -> i32 { return A; }",
+            "enum E { X, Y } const Z: i32 = 0; "
+            "const A: i32 = match E.X { E.X => 42, E.Y => 1 / Z }; fn main() -> i32 { return A; }",
+        ):
+            with self.subTest(source=source[:40]):
+                program, _ = compile_source(source)
+                self.assertTrue(program.constants)
+        # ...but the operand is folded when it is actually needed.
+        self.assertDiagnostic(
+            "const Z: i32 = 0; const A: bool = true && ((1 / Z) == 0); fn main() -> i32 { return 42; }",
+            "E0217", "invalid division")
+
+    def test_compile_time_division_and_remainder_truncate_toward_zero(self):
+        source = "const Q: i32 = -7 / 2; const R: i32 = -7 % 2; fn main() -> i32 { return Q * 10 + R + 73; }"
+        _, ir = compile_source(source)
+        self.assertIn("mul i32 -3, 10", ir)
+        self.assertIn("add i32 %0, -1", ir)
+
+    def test_compile_time_if_match_logic_and_comparisons(self):
+        source = "enum E { A, B } const X: E = E.B; const OK: bool = (1 < 2) && (X != E.A); const N: i32 = match X { E.A => 0, E.B => if OK { 42 } else { 1 } }; fn main() -> i32 { return N; }"
+        _, ir = compile_source(source)
+        self.assertIn("ret i32 42", ir)
+        self.assertNotIn("switch", ir)
+
+    def test_locals_may_shadow_constants_but_constants_are_immutable(self):
+        _, ir = compile_source("const A: i32 = 1; fn main() -> i32 { let A: i32 = 42; return A; }")
+        self.assertIn("ret i32 42", ir)
+        self.assertDiagnostic("const A: i32 = 1; fn main() -> i32 { A = 42; return A; }", "E0215", "immutable")
+
+    def test_constant_and_function_names_do_not_collide(self):
+        self.assertDiagnostic("const f: i32 = 1; fn f() -> i32 { return 1; } fn main() -> i32 { return 42; }", "E0238", "already declared")
+
+    def test_tenth_milestone_runs_natively(self):
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "constants.ocl"
+            path.write_text(self.SOURCE, encoding="utf-8")
+            executable = Path(directory) / ("constants.exe" if os.name == "nt" else "constants")
+            result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(run_executable(executable), 42)
+
+
 class OverflowSemanticsTests(unittest.TestCase):
     """M2: i32 arithmetic is defined as two's-complement wrapping."""
 

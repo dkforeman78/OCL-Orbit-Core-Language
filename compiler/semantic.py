@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .diagnostics import DiagnosticError, InternalCompilerError, SourceLocation
-from .parser import FRAMES_PER_BLOCK_LEVEL, MAX_BLOCK_DEPTH
+from .parser import FRAMES_PER_BLOCK_LEVEL, MAX_BLOCK_DEPTH, MAX_EXPRESSION_DEPTH
 from .stack import reserved
 from .nodes import (
     BinaryExpression,
@@ -64,14 +64,29 @@ def _require_known_type(type_name: str, source: str, location: SourceLocation, *
     if arrays and array and array[1] <= 0:
         raise DiagnosticError("E0219", "array length must be greater than zero", source, location)
     if arrays and array and array[1] > 256:
-        raise DiagnosticError("E0219", "Prototype 0.9 arrays may contain at most 256 elements", source, location)
+        raise DiagnosticError("E0219", "Prototype 0.10 arrays may contain at most 256 elements", source, location)
     if structures is not None and str(type_name) in structures:
         return
     if enumerations is not None and str(type_name) in enumerations:
         return
     if isinstance(type_name, StructType):
         raise DiagnosticError("E0200", f"unknown type '{type_name}'", source, location)
-    raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.9 supports scalar, enumeration, and approved local aggregate types", source, location)
+    raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.10 supports scalar, enumeration, and approved local aggregate types", source, location)
+
+
+def _require_constant_expression(expression: Expression, constants: dict, source: str) -> None:
+    allowed = (BooleanLiteral, IntegerLiteral, IdentifierExpression, EnumVariantExpression,
+               BinaryExpression, IfExpression, UnaryExpression, MatchExpression)
+    pending = [expression]
+    while pending:
+        node = pending.pop()
+        if not isinstance(node, allowed):
+            raise DiagnosticError(
+                "E0240", f"{type(node).__name__} is not allowed in a compile-time constant",
+                source, node.location)
+        if isinstance(node, IdentifierExpression) and node.name not in constants:
+            raise DiagnosticError("E0206", f"unknown constant '{node.name}'", source, node.location)
+        pending.extend(_operands(node))
 
 
 def analyze(program: Program, source: str) -> None:
@@ -121,8 +136,27 @@ def _analyze(program: Program, source: str) -> None:
             names.add(field.name)
         structures[structure.name] = structure
 
+    constants = {}
+    if len(program.constants) > 256:
+        raise DiagnosticError("E0238", "Prototype 0.10 allows at most 256 top-level constants", source, program.constants[256].location)
+    for constant in program.constants:
+        if constant.name in constants:
+            raise DiagnosticError("E0238", f"duplicate constant '{constant.name}'", source, constant.location)
+        _require_known_type(constant.type_name, source, constant.location, enumerations=enumerations)
+        constants[constant.name] = constant
+
+    constant_scope = {name: (constant.type_name, False) for name, constant in constants.items()}
+    for constant in program.constants:
+        _require_constant_expression(constant.initializer, constants, source)
+        actual = _analyze_expression(constant.initializer, constant_scope, {}, source, structures, enumerations)
+        if actual != constant.type_name:
+            raise DiagnosticError("E0214", f"constant '{constant.name}' expects {constant.type_name}, got {actual}", source, constant.location)
+    evaluate_constants(program, source)
+
     functions = {}
     for function in program.functions:
+        if function.name in constants:
+            raise DiagnosticError("E0238", f"top-level value name '{function.name}' is already declared as a constant", source, function.location)
         if function.name in functions:
             raise DiagnosticError("E0201", f"duplicate function '{function.name}'", source, function.location)
         functions[function.name] = function
@@ -147,12 +181,13 @@ def _analyze(program: Program, source: str) -> None:
         if array_bytes > MAX_LOCAL_ARRAY_BYTES:
             raise DiagnosticError(
                 "E0219",
-                f"function '{function.name}' declares {array_bytes} bytes of aggregates; Prototype 0.9 allows at most {MAX_LOCAL_ARRAY_BYTES}",
+                f"function '{function.name}' declares {array_bytes} bytes of aggregates; Prototype 0.10 allows at most {MAX_LOCAL_ARRAY_BYTES}",
                 source,
                 function.location,
             )
         parameter_names = {parameter.name for parameter in function.parameters}
-        scope = {parameter.name: (parameter.type_name, False) for parameter in function.parameters}
+        scope = dict(constant_scope)
+        scope.update({parameter.name: (parameter.type_name, False) for parameter in function.parameters})
         declared = set(parameter_names)
         if _analyze_statements(function.body, scope, declared, functions, function, source, structures=structures, enumerations=enumerations) != "return":
             raise DiagnosticError("E0202", f"function '{function.name}' can reach the end without returning", source, function.location)
@@ -191,7 +226,7 @@ def _analyze_statements(statements, scope, declared, functions, function, source
         if isinstance(statement, (LetStatement, VarStatement)):
             _require_known_type(statement.type_name, source, statement.location, arrays=True, structures=structures, enumerations=enumerations)
             if statement.name in declared:
-                raise DiagnosticError("E0210", f"name '{statement.name}' is already declared in this function; OCL 0.9 has no shadowing", source, statement.location)
+                raise DiagnosticError("E0210", f"name '{statement.name}' is already declared in this function; OCL 0.10 has no shadowing", source, statement.location)
             if _array_type(statement.type_name) and not isinstance(statement.initializer, ArrayLiteral):
                 raise DiagnosticError("E0223", "array initializer must be an array literal in OCL 0.7", source, statement.initializer.location)
             if str(statement.type_name) in structures and not isinstance(statement.initializer, StructLiteral):
@@ -464,3 +499,156 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
         else:
             raise InternalCompilerError(f"unsupported expression node: {type(node).__name__}")
     return types[id(expression)]
+
+
+def evaluate_constants(program: Program, source: str | None = None) -> dict[str, tuple[object, str]]:
+    required_frames = len(program.constants) * 3 + MAX_EXPRESSION_DEPTH
+    with reserved(required_frames):
+        return _evaluate_constants(program, source)
+
+
+def _evaluate_constants(program: Program, source: str | None = None) -> dict[str, tuple[object, str]]:
+    """Return fully folded constant values after (or during) semantic analysis."""
+    declarations = {constant.name: constant for constant in program.constants}
+    enumerations = {enumeration.name: enumeration for enumeration in program.enumerations}
+    values: dict[str, tuple[object, str]] = {}
+    active: list[str] = []
+
+    def fail(code, message, location):
+        if source is None:
+            raise InternalCompilerError(message)
+        raise DiagnosticError(code, message, source, location)
+
+    def wrap(value: int) -> int:
+        value &= 0xFFFFFFFF
+        return value - 0x100000000 if value >= 0x80000000 else value
+
+    def resolve(name: str, location):
+        if name in values:
+            return values[name]
+        if name in active:
+            cycle = " -> ".join((*active[active.index(name):], name))
+            fail("E0239", f"constant dependency cycle: {cycle}", location)
+        try:
+            declaration = declarations[name]
+        except KeyError:
+            fail("E0206", f"unknown constant '{name}'", location)
+        active.append(name)
+        value, type_name = evaluate(declaration.initializer)
+        active.pop()
+        values[name] = (value, declaration.type_name)
+        return values[name]
+
+    def apply_unary(node, operand):
+        if node.operator == "!":
+            return (not operand), ScalarType("bool")
+        return wrap(-operand), ScalarType("i32")
+
+    def apply_binary(node, left, right):
+        operator = node.operator
+        if operator == "+": return wrap(left + right), ScalarType("i32")
+        if operator == "-": return wrap(left - right), ScalarType("i32")
+        if operator == "*": return wrap(left * right), ScalarType("i32")
+        if operator in ("/", "%"):
+            if right == 0 or (left == -2147483648 and right == -1):
+                fail("E0217", "invalid division in compile-time constant", node.location)
+            quotient = (abs(left) // abs(right)) * (-1 if (left < 0) != (right < 0) else 1)
+            return (quotient if operator == "/" else left - quotient * right), ScalarType("i32")
+        if operator == "<": return left < right, ScalarType("bool")
+        if operator == "<=": return left <= right, ScalarType("bool")
+        if operator == ">": return left > right, ScalarType("bool")
+        if operator == ">=": return left >= right, ScalarType("bool")
+        if operator == "==": return left == right, ScalarType("bool")
+        if operator == "!=": return left != right, ScalarType("bool")
+        if operator in ("&&", "||"): return bool(right), ScalarType("bool")
+        fail("E0240", f"unsupported compile-time operator {operator}", node.location)
+
+    def evaluate(root):
+        """Fold one constant initializer without recursing over its AST.
+
+        Binary chains are folded iteratively by the parser, so an initializer's
+        AST depth is bounded only by the length of the source expression, not by
+        MAX_EXPRESSION_DEPTH. Recursing here made a long chain a RecursionError
+        while the identical expression in a function body compiled, because the
+        runtime analysis and lowering walks are already iterative.
+
+        `if`, `match`, `&&` and `||` still evaluate only the operand they
+        select, so a skipped branch cannot raise a diagnostic of its own.
+        """
+        results: dict[int, tuple[object, object]] = {}
+        pending: list[tuple[object, str]] = [(root, "visit")]
+        while pending:
+            node, stage = pending.pop()
+            if stage == "visit":
+                if isinstance(node, BooleanLiteral):
+                    results[id(node)] = (node.value, ScalarType("bool"))
+                elif isinstance(node, IntegerLiteral):
+                    results[id(node)] = (node.value, ScalarType("i32"))
+                elif isinstance(node, IdentifierExpression):
+                    results[id(node)] = resolve(node.name, node.location)
+                elif isinstance(node, EnumVariantExpression):
+                    enumeration = enumerations[node.enum_name]
+                    ordinal = next(index for index, variant in enumerate(enumeration.variants)
+                                   if variant.name == node.variant)
+                    results[id(node)] = (ordinal, EnumType(node.enum_name))
+                elif isinstance(node, UnaryExpression):
+                    pending.append((node, "unary"))
+                    pending.append((node.operand, "visit"))
+                elif isinstance(node, IfExpression):
+                    pending.append((node, "if"))
+                    pending.append((node.condition, "visit"))
+                elif isinstance(node, MatchExpression):
+                    pending.append((node, "match"))
+                    pending.append((node.scrutinee, "visit"))
+                elif isinstance(node, BinaryExpression):
+                    if node.operator in ("&&", "||"):
+                        pending.append((node, "logical"))
+                        pending.append((node.left, "visit"))
+                    else:
+                        pending.append((node, "binary"))
+                        pending.append((node.right, "visit"))
+                        pending.append((node.left, "visit"))
+                else:
+                    fail("E0240", f"unsupported compile-time expression {type(node).__name__}", node.location)
+                continue
+
+            if stage == "unary":
+                operand, _ = results[id(node.operand)]
+                results[id(node)] = apply_unary(node, operand)
+            elif stage == "binary":
+                left, _ = results[id(node.left)]
+                right, _ = results[id(node.right)]
+                results[id(node)] = apply_binary(node, left, right)
+            elif stage == "logical":
+                left, _ = results[id(node.left)]
+                if node.operator == "&&" and not left:
+                    results[id(node)] = (False, ScalarType("bool"))
+                elif node.operator == "||" and left:
+                    results[id(node)] = (True, ScalarType("bool"))
+                else:
+                    pending.append((node, "logical-right"))
+                    pending.append((node.right, "visit"))
+            elif stage == "logical-right":
+                right, _ = results[id(node.right)]
+                results[id(node)] = (bool(right), ScalarType("bool"))
+            elif stage == "if":
+                condition, _ = results[id(node.condition)]
+                chosen = node.then_expression if condition else node.else_expression
+                pending.append((node, ("select", chosen)))
+                pending.append((chosen, "visit"))
+            elif stage == "match":
+                ordinal, enum_type = results[id(node.scrutinee)]
+                enumeration = enumerations[str(enum_type)]
+                selected = enumeration.variants[ordinal].name
+                chosen = next(arm.expression for arm in node.arms if arm.variant == selected)
+                pending.append((node, ("select", chosen)))
+                pending.append((chosen, "visit"))
+            elif isinstance(stage, tuple) and stage[0] == "select":
+                results[id(node)] = results[id(stage[1])]
+            else:
+                fail("E0240", f"unsupported compile-time state {stage}", node.location)
+        return results[id(root)]
+
+    for constant in program.constants:
+        resolve(constant.name, constant.location)
+    return values

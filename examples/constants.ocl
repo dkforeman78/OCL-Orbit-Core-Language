@@ -1,0 +1,20 @@
+enum Mode {
+    Slow,
+    Fast,
+}
+
+const BASE: i32 = 40;
+const ANSWER: i32 = BASE + 2;
+const ENABLED: bool = true;
+const DEFAULT_MODE: Mode = Mode.Fast;
+
+fn choose(mode: Mode) -> i32 {
+    return match mode {
+        Mode.Fast => if ENABLED { ANSWER } else { 0 },
+        Mode.Slow => 1,
+    };
+}
+
+fn main() -> i32 {
+    return choose(DEFAULT_MODE);
+}
