@@ -1,6 +1,6 @@
 # OCL — Orbit Core Language
 
-OCL Compiler Prototype 0.10 adds typed compile-time constants with zero runtime storage.
+OCL Compiler Prototype 0.11 adds explicit fixed-width signed and unsigned integers.
 
 ## Prerequisites
 
@@ -13,11 +13,11 @@ OCL Compiler Prototype 0.10 adds typed compile-time constants with zero runtime 
   back to another compiler. Run `python tools/check_clang_version.py` to confirm
   the toolchain oclc will use.
 - A platform linker supported by Clang. The LLVM Windows installer includes
-  `lld-link`, which is sufficient for Prototype 0.10.
+  `lld-link`, which is sufficient for Prototype 0.11.
 
 The prototype is tested in CI on Windows, Linux, and macOS with Python 3.11 and
 3.12. Windows x86-64 is the primary development host. Cross-compilation and
-ARM64 validation are roadmap work, not 0.10 claims.
+ARM64 validation are roadmap work, not 0.11 claims.
 
 ## Use
 
@@ -55,6 +55,8 @@ $LASTEXITCODE # 42
 .\enums.exe
 .\oclc.cmd build examples\constants.ocl -o constants.exe
 .\constants.exe
+.\oclc.cmd build examples\integers.ocl -o integers.exe
+.\integers.exe
 $LASTEXITCODE # 42
 ```
 
@@ -88,13 +90,13 @@ minimum.
 
 ## Scope and limitations
 
-Prototype 0.10 adds typed, declaration-order-independent compile-time constants to the 0.9 language. See [the language specification](docs/OCL_LANGUAGE_SPEC.md) and [architecture overview](docs/ARCHITECTURE.md).
+Prototype 0.11 adds fixed-width signed and unsigned integers with explicit conversions to the 0.10 language. See [the language specification](docs/OCL_LANGUAGE_SPEC.md) and [architecture overview](docs/ARCHITECTURE.md).
 
 There is intentionally no runtime or aggregate constant, constant function call, enum payload, wildcard or guarded match arm, type inference, uninitialized variable, aggregate parameters or returns, nested aggregates, aggregate copying or equality, slices, methods, stable structure or enum representation, `else if`, `for`, labeled loop control, floating point, global storage, `.oxr`/`.ofx` generation, custom linker, stabilized OCL ABI, ownership model, package manager, or standard library yet. Native builds use the host format until the canonical Orbit executable specification is supplied.
 
 Windows executables are linked without the MSVC C runtime and enter directly at
 `main`, which avoids an unnecessary Visual Studio dependency. This holds for
-0.10's functions, locals, constants, guarded arithmetic, loop control, bounded local arrays, local structures, and enums, and the
+0.11's functions, locals, constants, guarded arithmetic, loop control, bounded local arrays, local structures, and enums, and the
 conditions that would invalidate it —
 frames larger than a page, static initializers, any C runtime or system-library
 call, or a need for `argc`/`argv` — are listed in
@@ -102,4 +104,4 @@ call, or a need for `argc`/`argv` — are listed in
 and C ABI linking strategy must be designed before any of those appear.
 The Windows-only linker flags assume Clang's PE/COFF-compatible linker interface;
 they do not select or stabilize a target triple. Clang selects the native host
-target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.10 claim.
+target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.11 claim.

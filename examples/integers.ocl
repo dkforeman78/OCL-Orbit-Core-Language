@@ -1,0 +1,14 @@
+const WRAPPED: u8 = (255 as u8) + (43 as u8);
+
+fn divide(value: u64, divisor: u64) -> u64 {
+    return value / divisor;
+}
+
+fn main() -> i32 {
+    let quotient: u64 = divide(252 as u64, 6 as u64);
+    return if quotient == (WRAPPED as u64) {
+        WRAPPED as i32
+    } else {
+        0
+    };
+}

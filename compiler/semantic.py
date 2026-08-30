@@ -11,6 +11,7 @@ from .nodes import (
     BreakStatement,
     BooleanLiteral,
     CallExpression,
+    CastExpression,
     ContinueStatement,
     Expression,
     I32_MAX,
@@ -31,9 +32,20 @@ from .nodes import (
     VarStatement,
     WhileStatement,
 )
-from .types import ArrayType, EnumType, ScalarType, StructType
+from .types import (
+    INTEGER_TYPES,
+    ArrayType,
+    EnumType,
+    ScalarType,
+    StructType,
+    integer_is_signed,
+    integer_minimum,
+    integer_width,
+    is_integer,
+    wrap_integer,
+)
 
-SUPPORTED_TYPES = frozenset(("bool", "i32"))
+SUPPORTED_TYPES = frozenset(("bool", *INTEGER_TYPES))
 ARITHMETIC_OPERATORS = frozenset(("+", "-", "*", "/", "%"))
 RELATIONAL_OPERATORS = frozenset(("<", "<=", ">", ">="))
 EQUALITY_OPERATORS = frozenset(("==", "!="))
@@ -64,19 +76,19 @@ def _require_known_type(type_name: str, source: str, location: SourceLocation, *
     if arrays and array and array[1] <= 0:
         raise DiagnosticError("E0219", "array length must be greater than zero", source, location)
     if arrays and array and array[1] > 256:
-        raise DiagnosticError("E0219", "Prototype 0.10 arrays may contain at most 256 elements", source, location)
+        raise DiagnosticError("E0219", "Prototype 0.11 arrays may contain at most 256 elements", source, location)
     if structures is not None and str(type_name) in structures:
         return
     if enumerations is not None and str(type_name) in enumerations:
         return
     if isinstance(type_name, StructType):
         raise DiagnosticError("E0200", f"unknown type '{type_name}'", source, location)
-    raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.10 supports scalar, enumeration, and approved local aggregate types", source, location)
+    raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.11 supports scalar, enumeration, and approved local aggregate types", source, location)
 
 
 def _require_constant_expression(expression: Expression, constants: dict, source: str) -> None:
     allowed = (BooleanLiteral, IntegerLiteral, IdentifierExpression, EnumVariantExpression,
-               BinaryExpression, IfExpression, UnaryExpression, MatchExpression)
+               BinaryExpression, IfExpression, UnaryExpression, CastExpression, MatchExpression)
     pending = [expression]
     while pending:
         node = pending.pop()
@@ -138,7 +150,7 @@ def _analyze(program: Program, source: str) -> None:
 
     constants = {}
     if len(program.constants) > 256:
-        raise DiagnosticError("E0238", "Prototype 0.10 allows at most 256 top-level constants", source, program.constants[256].location)
+        raise DiagnosticError("E0238", "Prototype 0.11 allows at most 256 top-level constants", source, program.constants[256].location)
     for constant in program.constants:
         if constant.name in constants:
             raise DiagnosticError("E0238", f"duplicate constant '{constant.name}'", source, constant.location)
@@ -181,7 +193,7 @@ def _analyze(program: Program, source: str) -> None:
         if array_bytes > MAX_LOCAL_ARRAY_BYTES:
             raise DiagnosticError(
                 "E0219",
-                f"function '{function.name}' declares {array_bytes} bytes of aggregates; Prototype 0.10 allows at most {MAX_LOCAL_ARRAY_BYTES}",
+                f"function '{function.name}' declares {array_bytes} bytes of aggregates; Prototype 0.11 allows at most {MAX_LOCAL_ARRAY_BYTES}",
                 source,
                 function.location,
             )
@@ -201,12 +213,12 @@ def _local_aggregate_bytes(statements, structures) -> int:
         if isinstance(statement, (LetStatement, VarStatement)):
             array = _array_type(statement.type_name)
             if array:
-                total += array[1] * (4 if array[0] == "i32" else 1)
+                total += array[1] * (integer_width(array[0]) // 8 if is_integer(array[0]) else 1)
             elif str(statement.type_name) in structures:
                 offset = 0
                 maximum_alignment = 1
                 for field in structures[str(statement.type_name)].fields:
-                    size = 4 if field.type_name == "i32" else 1
+                    size = integer_width(field.type_name) // 8 if is_integer(field.type_name) else 1
                     maximum_alignment = max(maximum_alignment, size)
                     offset = (offset + size - 1) // size * size
                     offset += size
@@ -226,7 +238,7 @@ def _analyze_statements(statements, scope, declared, functions, function, source
         if isinstance(statement, (LetStatement, VarStatement)):
             _require_known_type(statement.type_name, source, statement.location, arrays=True, structures=structures, enumerations=enumerations)
             if statement.name in declared:
-                raise DiagnosticError("E0210", f"name '{statement.name}' is already declared in this function; OCL 0.10 has no shadowing", source, statement.location)
+                raise DiagnosticError("E0210", f"name '{statement.name}' is already declared in this function; OCL 0.11 has no shadowing", source, statement.location)
             if _array_type(statement.type_name) and not isinstance(statement.initializer, ArrayLiteral):
                 raise DiagnosticError("E0223", "array initializer must be an array literal in OCL 0.7", source, statement.initializer.location)
             if str(statement.type_name) in structures and not isinstance(statement.initializer, StructLiteral):
@@ -312,6 +324,8 @@ def _operands(expression: Expression) -> tuple[Expression, ...]:
         return (expression.condition, expression.then_expression, expression.else_expression)
     if isinstance(expression, UnaryExpression):
         return (expression.operand,)
+    if isinstance(expression, CastExpression):
+        return (expression.operand,)
     if isinstance(expression, ArrayLiteral):
         return expression.elements
     if isinstance(expression, IndexExpression):
@@ -354,7 +368,7 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
                     raise DiagnosticError("E0234", f"enumeration '{node.enum_name}' has no variant '{node.variant}'", source, node.location)
                 types[id(node)] = EnumType(node.enum_name)
                 continue
-            if not isinstance(node, (BinaryExpression, CallExpression, IfExpression, UnaryExpression, ArrayLiteral, IndexExpression, StructLiteral, FieldExpression, MatchExpression)):
+            if not isinstance(node, (BinaryExpression, CallExpression, IfExpression, UnaryExpression, CastExpression, ArrayLiteral, IndexExpression, StructLiteral, FieldExpression, MatchExpression)):
                 raise InternalCompilerError(f"unsupported expression node: {type(node).__name__}")
             pending.append((node, True))
             pending.extend((operand, False) for operand in reversed(_operands(node)))
@@ -364,14 +378,14 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
             left = types[id(node.left)]
             right = types[id(node.right)]
             if node.operator in ARITHMETIC_OPERATORS:
-                if left != "i32" or right != "i32":
-                    raise DiagnosticError("E0211", f"operator '{node.operator}' requires i32 operands, got {left} and {right}", source, node.location)
+                if not is_integer(left) or left != right:
+                    raise DiagnosticError("E0211", f"operator '{node.operator}' requires matching integer operands, got {left} and {right}", source, node.location)
                 if node.operator in ("/", "%") and isinstance(node.right, IntegerLiteral) and node.right.value == 0:
                     raise DiagnosticError("E0217", "division by zero", source, node.right.location)
-                types[id(node)] = "i32"
+                types[id(node)] = left
             elif node.operator in RELATIONAL_OPERATORS:
-                if left != "i32" or right != "i32":
-                    raise DiagnosticError("E0211", f"operator '{node.operator}' requires i32 operands, got {left} and {right}", source, node.location)
+                if not is_integer(left) or left != right:
+                    raise DiagnosticError("E0211", f"operator '{node.operator}' requires matching integer operands, got {left} and {right}", source, node.location)
                 types[id(node)] = "bool"
             elif node.operator in EQUALITY_OPERATORS:
                 if _array_type(left) or _array_type(right):
@@ -415,11 +429,22 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
             operand = types[id(node.operand)]
             if node.operator == "!" and operand == "bool":
                 types[id(node)] = "bool"
-            elif node.operator == "-" and operand == "i32":
-                types[id(node)] = "i32"
+            elif node.operator == "-" and is_integer(operand):
+                types[id(node)] = operand
             else:
-                requirement = "bool" if node.operator == "!" else "i32"
-                raise DiagnosticError("E0211", f"operator '{node.operator}' requires a {requirement} operand, got {operand}", source, node.location)
+                article = "a" if node.operator == "!" else "an"
+                requirement = "bool" if node.operator == "!" else "integer"
+                raise DiagnosticError("E0211", f"operator '{node.operator}' requires {article} {requirement} operand, got {operand}", source, node.location)
+        elif isinstance(node, CastExpression):
+            operand = types[id(node.operand)]
+            if (not is_integer(node.type_name) and node.type_name != "bool"
+                    and str(node.type_name) not in structures and str(node.type_name) not in enumerations):
+                raise DiagnosticError("E0200", f"unknown type '{node.type_name}'", source, node.location)
+            if not is_integer(operand) or not is_integer(node.type_name):
+                raise DiagnosticError(
+                    "E0241", f"integer conversion requires integer source and target, got {operand} as {node.type_name}",
+                    source, node.location)
+            types[id(node)] = node.type_name
         elif isinstance(node, ArrayLiteral):
             if not node.elements:
                 raise DiagnosticError("E0224", "array literal must contain at least one element", source, node.location)
@@ -519,10 +544,6 @@ def _evaluate_constants(program: Program, source: str | None = None) -> dict[str
             raise InternalCompilerError(message)
         raise DiagnosticError(code, message, source, location)
 
-    def wrap(value: int) -> int:
-        value &= 0xFFFFFFFF
-        return value - 0x100000000 if value >= 0x80000000 else value
-
     def resolve(name: str, location):
         if name in values:
             return values[name]
@@ -539,21 +560,24 @@ def _evaluate_constants(program: Program, source: str | None = None) -> dict[str
         values[name] = (value, declaration.type_name)
         return values[name]
 
-    def apply_unary(node, operand):
+    def apply_unary(node, operand, operand_type):
         if node.operator == "!":
             return (not operand), ScalarType("bool")
-        return wrap(-operand), ScalarType("i32")
+        return wrap_integer(-operand, operand_type), operand_type
 
-    def apply_binary(node, left, right):
+    def apply_binary(node, left, left_type, right):
         operator = node.operator
-        if operator == "+": return wrap(left + right), ScalarType("i32")
-        if operator == "-": return wrap(left - right), ScalarType("i32")
-        if operator == "*": return wrap(left * right), ScalarType("i32")
+        if operator == "+": return wrap_integer(left + right, left_type), left_type
+        if operator == "-": return wrap_integer(left - right, left_type), left_type
+        if operator == "*": return wrap_integer(left * right, left_type), left_type
         if operator in ("/", "%"):
-            if right == 0 or (left == -2147483648 and right == -1):
+            if right == 0 or (integer_is_signed(left_type) and left == integer_minimum(left_type) and right == -1):
                 fail("E0217", "invalid division in compile-time constant", node.location)
-            quotient = (abs(left) // abs(right)) * (-1 if (left < 0) != (right < 0) else 1)
-            return (quotient if operator == "/" else left - quotient * right), ScalarType("i32")
+            if integer_is_signed(left_type):
+                quotient = (abs(left) // abs(right)) * (-1 if (left < 0) != (right < 0) else 1)
+            else:
+                quotient = left // right
+            return (quotient if operator == "/" else left - quotient * right), left_type
         if operator == "<": return left < right, ScalarType("bool")
         if operator == "<=": return left <= right, ScalarType("bool")
         if operator == ">": return left > right, ScalarType("bool")
@@ -594,6 +618,9 @@ def _evaluate_constants(program: Program, source: str | None = None) -> dict[str
                 elif isinstance(node, UnaryExpression):
                     pending.append((node, "unary"))
                     pending.append((node.operand, "visit"))
+                elif isinstance(node, CastExpression):
+                    pending.append((node, "cast"))
+                    pending.append((node.operand, "visit"))
                 elif isinstance(node, IfExpression):
                     pending.append((node, "if"))
                     pending.append((node.condition, "visit"))
@@ -613,12 +640,15 @@ def _evaluate_constants(program: Program, source: str | None = None) -> dict[str
                 continue
 
             if stage == "unary":
+                operand, operand_type = results[id(node.operand)]
+                results[id(node)] = apply_unary(node, operand, operand_type)
+            elif stage == "cast":
                 operand, _ = results[id(node.operand)]
-                results[id(node)] = apply_unary(node, operand)
+                results[id(node)] = (wrap_integer(operand, node.type_name), node.type_name)
             elif stage == "binary":
-                left, _ = results[id(node.left)]
+                left, left_type = results[id(node.left)]
                 right, _ = results[id(node.right)]
-                results[id(node)] = apply_binary(node, left, right)
+                results[id(node)] = apply_binary(node, left, left_type, right)
             elif stage == "logical":
                 left, _ = results[id(node.left)]
                 if node.operator == "&&" and not left:

@@ -16,6 +16,7 @@ class TokenKind(Enum):
     BREAK = auto()
     CONTINUE = auto()
     CONST = auto()
+    AS = auto()
     STRUCT = auto()
     ENUM = auto()
     MATCH = auto()
@@ -134,6 +135,7 @@ def lex(source: str) -> list[Token]:
                 "break": TokenKind.BREAK,
                 "continue": TokenKind.CONTINUE,
                 "const": TokenKind.CONST,
+                "as": TokenKind.AS,
                 "struct": TokenKind.STRUCT,
                 "enum": TokenKind.ENUM,
                 "match": TokenKind.MATCH,

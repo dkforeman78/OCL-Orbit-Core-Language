@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.0 - Unreleased
+
+- Added signed `i8`, `i16`, and `i64` and unsigned `u8`, `u16`, `u32`, and `u64` alongside `i32`.
+- Added explicit integer conversion with `as`; implicit widening and signedness conversion remain forbidden.
+- Added exact-width wrapping arithmetic, signed and unsigned comparisons, and guarded signed/unsigned division and remainder.
+- Extended functions, locals, constants, arrays, and structure fields to all fixed-width integer types.
+- Added the `integers.ocl` native acceptance program.
+
 ## 0.10.0 - 2026-08-30
 
 - Added top-level typed compile-time constants for `i32`, `bool`, and declared enum types.
