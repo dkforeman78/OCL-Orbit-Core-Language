@@ -8,6 +8,12 @@
 - Extended functions, locals, constants, arrays, and structure fields to all fixed-width integer types.
 - Added the `integers.ocl` native acceptance program.
 
+### Fixed after independent review
+
+- Covered runtime arithmetic and unary negation at widths other than `i32`. The acceptance program's narrow arithmetic is entirely constant-folded, so nothing reached the backend at another width; pinning either instruction to `i32` emits IR LLVM rejects outright while the suite stayed green.
+- Covered the absence of a minimum-overflow guard on unsigned division. Only signed division can overflow, at `MIN / -1`; extending that guard to unsigned types compares the dividend against `0` and the divisor against the all-ones pattern, so `0 / 255` at `u8` traps instead of yielding `0`.
+
+
 ## 0.10.0 - 2026-08-30
 
 - Added top-level typed compile-time constants for `i32`, `bool`, and declared enum types.

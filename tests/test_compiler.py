@@ -2183,6 +2183,86 @@ class Ocl11Tests(DiagnosticAssertions):
         self.assertEqual(self._build_and_run(
             "fn main() -> i32 { return ((252 as u8) / (6 as u8)) as i32; }", "udiv"), 42)
 
+    def test_unsigned_division_has_no_minimum_overflow_guard(self):
+        # Only signed division can overflow, at MIN / -1. Extending that guard to
+        # unsigned types compares the dividend against integer_minimum, which is
+        # 0 for unsigned, and the divisor against the all-ones pattern, so 0 / 255
+        # at u8 traps instead of yielding 0.
+        for type_name in ("u8", "u16", "u32", "u64"):
+            with self.subTest(type_name=type_name):
+                _, ir = compile_source(
+                    f"fn f(a: {type_name}, b: {type_name}) -> {type_name} {{ return a / b; }} "
+                    "fn main() -> i32 { return 42; }")
+                guards = [line.strip() for line in ir.splitlines() if "icmp" in line]
+                self.assertEqual(len(guards), 1, guards)
+                self.assertIn(", 0", guards[0])
+
+    def test_unsigned_zero_divided_by_all_ones_does_not_trap(self):
+        require_clang()
+        source = ("fn z(x: u8) -> u8 { return x; } "
+                  "fn main() -> i32 { return if z(0 as u8) / z(255 as u8) == (0 as u8) { 42 } else { 0 }; }")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "udiv.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / ("udiv.exe" if os.name == "nt" else "udiv")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(run_executable(executable, timeout=10), 42)
+
+    def test_runtime_arithmetic_uses_the_operand_width(self):
+        # The acceptance program's narrow arithmetic is all constant-folded, so
+        # nothing reached the backend at a width other than i32. Pinning the
+        # instruction to i32 emits IR LLVM rejects outright.
+        expected = {"i8": "i8", "i16": "i16", "i32": "i32", "i64": "i64",
+                    "u8": "i8", "u16": "i16", "u32": "i32", "u64": "i64"}
+        for type_name, llvm in expected.items():
+            with self.subTest(type_name=type_name):
+                _, ir = compile_source(
+                    f"fn f(a: {type_name}, b: {type_name}) -> {type_name} {{ return a + b * a - b; }} "
+                    "fn main() -> i32 { return 42; }")
+                for instruction in ("add", "mul", "sub"):
+                    self.assertIn(f"= {instruction} {llvm} ", ir)
+
+    def test_runtime_unary_minus_uses_the_operand_width(self):
+        for type_name, llvm in (("i8", "i8"), ("i16", "i16"), ("i64", "i64")):
+            with self.subTest(type_name=type_name):
+                _, ir = compile_source(
+                    f"fn f(a: {type_name}) -> {type_name} {{ return -a; }} "
+                    "fn main() -> i32 { return 42; }")
+                self.assertIn(f"= sub {llvm} 0, %a", ir)
+
+    def test_narrow_and_wide_arithmetic_runs_natively(self):
+        require_clang()
+        cases = {
+            "i8": "fn id(x: i8) -> i8 { return x; } "
+                  "fn main() -> i32 { return if id(127 as i8) + id(1 as i8) == ((0 - 128) as i8) "
+                  "{ if -id(1 as i8) == ((0 - 1) as i8) { 42 } else { 0 } } else { 0 }; }",
+            "u8": "fn id(x: u8) -> u8 { return x; } "
+                  "fn main() -> i32 { return if id(255 as u8) + id(43 as u8) == (42 as u8) { 42 } else { 0 }; }",
+            "i64": "fn id(x: i64) -> i64 { return x; } "
+                   "fn main() -> i32 { return if id(2147483647 as i64) + id(1 as i64) > id(2147483647 as i64) "
+                   "{ if -id(42 as i64) == ((0 - 42) as i64) { 42 } else { 0 } } else { 0 }; }",
+            "i16": "fn id(x: i16) -> i16 { return x; } "
+                   "fn main() -> i32 { return if id(32767 as i16) + id(1 as i16) == ((0 - 32768) as i16) "
+                   "{ 42 } else { 0 }; }",
+            "u64": "fn id(x: u64) -> u64 { return x; } "
+                   "fn main() -> i32 { return if id(((0 - 1) as i64) as u64) / id(2 as u64) > id(1 as u64) "
+                   "{ 42 } else { 0 }; }",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for type_name, source in cases.items():
+                with self.subTest(type_name=type_name):
+                    path = Path(directory) / f"{type_name}.ocl"
+                    path.write_text(source, encoding="utf-8")
+                    executable = Path(directory) / (f"{type_name}.exe" if os.name == "nt" else type_name)
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                        capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(run_executable(executable, timeout=10), 42)
+
     def test_each_signed_width_guards_its_own_minimum(self):
         functions = " ".join(
             f"fn f{width}(a: i{width}, b: i{width}) -> i{width} {{ return a / b; }}"
