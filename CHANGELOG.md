@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.11.0 - Unreleased
+## 0.11.0 - 2026-09-02
 
 - Added signed `i8`, `i16`, and `i64` and unsigned `u8`, `u16`, `u32`, and `u64` alongside `i32`.
 - Added explicit integer conversion with `as`; implicit widening and signedness conversion remain forbidden.
