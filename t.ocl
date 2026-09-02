@@ -1,2 +1,0 @@
-fn f(a: i32, b: i32) -> u32 { return (a as u32) + (b as u32); }
-fn main() -> i32 { return 42; }
