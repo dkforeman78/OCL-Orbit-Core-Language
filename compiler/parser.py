@@ -9,6 +9,7 @@ from .nodes import (
     BreakStatement,
     BooleanLiteral,
     CallExpression,
+    CastExpression,
     ContinueStatement,
     ConstDeclaration,
     Expression,
@@ -41,7 +42,7 @@ from .nodes import (
 from .diagnostics import DiagnosticError
 from .lexer import Token, TokenKind
 from .stack import RECURSION_LIMIT_LOCK, reserved
-from .types import ArrayType, EnumType, ScalarType, StructType, TypeRef
+from .types import INTEGER_TYPES, ArrayType, EnumType, ScalarType, StructType, TypeRef
 
 _MAX_I32_DIGITS = len(str(I32_MAX))
 
@@ -157,7 +158,7 @@ class Parser:
         self.block_depth += 1
         if self.block_depth > MAX_BLOCK_DEPTH:
             self.block_depth -= 1
-            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.10 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
+            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.11 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
         try:
             statements: list[Statement] = []
             while not self._at(TokenKind.RIGHT_BRACE) and not self._at(TokenKind.EOF):
@@ -256,7 +257,7 @@ class Parser:
         if self.depth > MAX_EXPRESSION_DEPTH:
             raise DiagnosticError(
                 "E0101",
-                f"expression is nested too deeply; OCL 0.10 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                f"expression is nested too deeply; OCL 0.11 allows at most {MAX_EXPRESSION_DEPTH} levels",
                 self.source,
                 self.tokens[self.current].location,
             )
@@ -316,7 +317,7 @@ class Parser:
                 self.depth -= 1
                 raise DiagnosticError(
                     "E0101",
-                    f"expression is nested too deeply; OCL 0.10 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                    f"expression is nested too deeply; OCL 0.11 allows at most {MAX_EXPRESSION_DEPTH} levels",
                     self.source,
                     operator.location,
                 )
@@ -326,11 +327,13 @@ class Parser:
                     significant = value.lexeme.lstrip("0") or "0"
                     if len(significant) > len(str(I32_MAX + 1)) or int(significant) > I32_MAX + 1:
                         raise DiagnosticError("E0203", "integer literal does not fit in i32", self.source, value.location)
-                    return IntegerLiteral(-int(significant), operator.location)
+                    return self._postfix(IntegerLiteral(-int(significant), operator.location))
                 return UnaryExpression(operator.lexeme, self._unary(), operator.location)
             finally:
                 self.depth -= 1
-        expression = self._primary()
+        return self._postfix(self._primary())
+
+    def _postfix(self, expression: Expression) -> Expression:
         while True:
             if self._match(TokenKind.LEFT_BRACKET):
                 start = self.tokens[self.current - 1]
@@ -342,6 +345,11 @@ class Parser:
                 start = self.tokens[self.current - 1]
                 field = self._expect(TokenKind.IDENTIFIER, "expected field name after '.'")
                 expression = FieldExpression(expression, field.lexeme, start.location)
+                continue
+            if self._match(TokenKind.AS):
+                start = self.tokens[self.current - 1]
+                target = self._expect(TokenKind.IDENTIFIER, "expected integer type after 'as'")
+                expression = CastExpression(expression, self._named_type(target.lexeme), start.location)
                 continue
             break
         return expression
@@ -430,7 +438,7 @@ class Parser:
         return MatchExpression(scrutinee, tuple(arms), start.location)
 
     def _named_type(self, name: str) -> TypeRef:
-        if name in ("i32", "bool"):
+        if name == "bool" or name in INTEGER_TYPES:
             return ScalarType(name)
         if name in self.enum_names:
             return EnumType(name)

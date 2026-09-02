@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from .diagnostics import SourceLocation
 from .types import TypeRef
 
-# The only integer type in OCL 0.8. Both the parser and the semantic analyzer
-# bound literals against this, so it lives here rather than in either of them.
+# Unsuffixed source literals remain i32 in OCL 0.11. Both the parser and the
+# semantic analyzer bound them against this, so it lives here rather than in
+# either of them.
 I32_MAX = 2_147_483_647
 
 
@@ -55,6 +56,13 @@ class IfExpression:
 class UnaryExpression:
     operator: str
     operand: Expression
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class CastExpression:
+    operand: Expression
+    type_name: TypeRef
     location: SourceLocation
 
 
@@ -114,7 +122,7 @@ class MatchExpression:
     location: SourceLocation
 
 
-Expression = BooleanLiteral | IntegerLiteral | IdentifierExpression | BinaryExpression | CallExpression | IfExpression | UnaryExpression | ArrayLiteral | IndexExpression | StructLiteral | FieldExpression | EnumVariantExpression | MatchExpression
+Expression = BooleanLiteral | IntegerLiteral | IdentifierExpression | BinaryExpression | CallExpression | IfExpression | UnaryExpression | CastExpression | ArrayLiteral | IndexExpression | StructLiteral | FieldExpression | EnumVariantExpression | MatchExpression
 
 
 @dataclass(frozen=True)

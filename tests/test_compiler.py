@@ -167,7 +167,7 @@ class FrontendTests(DiagnosticAssertions):
 
 class SemanticTests(DiagnosticAssertions):
     def test_invalid_declared_type(self):
-        self.assertDiagnostic(VALID.replace("i32", "i64"), "E0200", "unknown type")
+        self.assertDiagnostic(VALID.replace("i32", "i128"), "E0200", "unknown type")
 
     def test_duplicate_function_name(self):
         source = "fn main() -> i32 { return 1; }\nfn main() -> i32 { return 2; }\n"
@@ -234,8 +234,8 @@ class SemanticTests(DiagnosticAssertions):
         self.assertDiagnostic("fn main(value: i32) -> i32 { return value; }", "E0209", "must not declare parameters")
 
     def test_parameter_type_must_be_i32(self):
-        source = "fn identity(value: i64) -> i32 { return value; } fn main() -> i32 { return 0; }"
-        self.assertDiagnostic(source, "E0200", "unknown type 'i64'")
+        source = "fn identity(value: i128) -> i32 { return value as i32; } fn main() -> i32 { return 0; }"
+        self.assertDiagnostic(source, "E0200", "unknown type 'i128'")
 
     def test_forward_function_call_is_resolved(self):
         source = "fn main() -> i32 { return answer(); } fn answer() -> i32 { return 42; }"
@@ -370,7 +370,7 @@ class Ocl03Tests(DiagnosticAssertions):
         self.assertNotIn("parameter", error.message)
 
     def test_local_type_must_be_i32(self):
-        self.assertDiagnostic("fn main() -> i32 { let value: i64 = 42; return value; }", "E0200", "unknown type 'i64'")
+        self.assertDiagnostic("fn main() -> i32 { let value: i128 = 42; return value; }", "E0200", "unknown type 'i128'")
 
     def test_return_must_be_the_final_statement(self):
         source = "fn main() -> i32 { return 1; let value: i32 = 42; }"
@@ -496,10 +496,10 @@ class Ocl04Tests(DiagnosticAssertions):
         self.assertEqual(phis[-1], "%2 = phi i32 [%0, %ocl.if.merge.1], [%1, %ocl.if.merge.2]")
 
     def test_bool_arithmetic_is_rejected(self):
-        self.assertDiagnostic("fn main() -> i32 { return true + false; }", "E0211", "requires i32 operands")
+        self.assertDiagnostic("fn main() -> i32 { return true + false; }", "E0211", "requires matching integer operands")
 
     def test_bool_relational_comparison_is_rejected(self):
-        self.assertDiagnostic("fn main() -> i32 { return if true < false { 42 } else { 0 }; }", "E0211", "requires i32 operands")
+        self.assertDiagnostic("fn main() -> i32 { return if true < false { 42 } else { 0 }; }", "E0211", "requires matching integer operands")
 
     def test_equality_requires_matching_types(self):
         self.assertDiagnostic("fn main() -> i32 { return if true == 1 { 42 } else { 0 }; }", "E0211", "matching operand types")
@@ -761,8 +761,8 @@ class Ocl06Tests(DiagnosticAssertions):
         self.assertDiagnostic("fn main() -> i32 { while true { break; return 1; } return 42; }", "E0216", "after break")
         self.assertDiagnostic("fn main() -> i32 { while true { continue; return 1; } return 42; }", "E0216", "after continue")
 
-    def test_unary_minus_requires_i32(self):
-        self.assertDiagnostic("fn main() -> i32 { return if -true { 1 } else { 0 }; }", "E0211", "i32 operand")
+    def test_unary_minus_requires_an_integer(self):
+        self.assertDiagnostic("fn main() -> i32 { return if -true { 1 } else { 0 }; }", "E0211", "integer operand")
 
     def test_i32_min_literal_is_supported(self):
         _, ir = compile_source("fn main() -> i32 { return -2147483648; }")
@@ -1093,7 +1093,7 @@ class Ocl08Tests(DiagnosticAssertions):
             "struct A { x: i32, x: bool } fn main() -> i32 { return 42; }",
             "E0226", "duplicate field")
         self.assertDiagnostic(
-            "struct A { x: i64 } fn main() -> i32 { return 42; }",
+            "struct A { x: i128 } fn main() -> i32 { return 42; }",
             "E0200", "unknown type")
 
     def test_structure_literal_requires_the_exact_field_set(self):
@@ -1863,8 +1863,8 @@ fn main() -> i32 { return value(Direction.North); }
 
     def test_enums_are_nominal_and_only_support_equality(self):
         self.assertDiagnostic("enum A { X } enum B { X } fn main() -> i32 { return if A.X == B.X { 42 } else { 0 }; }", "E0211", "matching operand types")
-        self.assertDiagnostic("enum E { A, B } fn main() -> i32 { return E.A + E.B; }", "E0211", "requires i32")
-        self.assertDiagnostic("enum E { A, B } fn main() -> i32 { return if E.A < E.B { 42 } else { 0 }; }", "E0211", "requires i32")
+        self.assertDiagnostic("enum E { A, B } fn main() -> i32 { return E.A + E.B; }", "E0211", "requires matching integer")
+        self.assertDiagnostic("enum E { A, B } fn main() -> i32 { return if E.A < E.B { 42 } else { 0 }; }", "E0211", "requires matching integer")
 
     def test_match_requires_an_enum_and_matching_arm_types(self):
         self.assertDiagnostic("fn main() -> i32 { return match 1 { E.A => 42 }; }", "E0235", "requires an enumeration")
@@ -2102,6 +2102,219 @@ fn main() -> i32 { return choose(DEFAULT_MODE); }
             result = subprocess.run([sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(run_executable(executable), 42)
+
+
+class Ocl11Tests(DiagnosticAssertions):
+    INTEGER_TYPES = ("i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64")
+
+    def _build_and_run(self, source: str, name: str = "integers") -> int:
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / f"{name}.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / (f"{name}.exe" if os.name == "nt" else name)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return run_executable(executable, timeout=10)
+
+    def test_every_fixed_width_integer_is_allowed_in_signatures_and_locals(self):
+        helpers = []
+        calls = []
+        for index, type_name in enumerate(self.INTEGER_TYPES):
+            helpers.append(f"fn f{index}(x: {type_name}) -> {type_name} {{ let y: {type_name} = x; return y; }}")
+            calls.append(f"f{index}(42 as {type_name}) as i32")
+        source = " ".join(helpers) + " fn main() -> i32 { return " + " + ".join(calls) + " - 294; }"
+        _, ir = compile_source(source)
+        for type_name in self.INTEGER_TYPES:
+            self.assertIn(f"i{type_name[1:]}", ir)
+        self.assertEqual(self._build_and_run(source), 42)
+
+    def test_unsuffixed_literals_remain_i32_and_conversions_are_explicit(self):
+        self.assertDiagnostic(
+            "fn main() -> i32 { let x: u8 = 42; return x as i32; }",
+            "E0214", "expects u8, got i32")
+        _, ir = compile_source("fn main() -> i32 { let x: u8 = 42 as u8; return x as i32; }")
+        self.assertIn("trunc i32 42 to i8", ir)
+        self.assertIn("zext i8", ir)
+
+    def test_integer_arithmetic_requires_exactly_matching_types(self):
+        self.assertDiagnostic(
+            "fn main() -> i32 { let x: u8 = 1 as u8; return (x + 1) as i32; }",
+            "E0211", "matching integer operands")
+        self.assertDiagnostic(
+            "fn main() -> i32 { return ((1 as i8) + (1 as u8)) as i32; }",
+            "E0211", "got i8 and u8")
+
+    def test_casts_truncate_extend_and_reinterpret_by_source_signedness(self):
+        _, ir = compile_source(
+            "fn main() -> i32 { let a: i8 = (-1) as i8; let b: u8 = 255 as u8; "
+            "let c: i64 = a as i64; let d: u64 = b as u64; return (c + (d as i64)) as i32 - 212; }")
+        self.assertIn("trunc i32 -1 to i8", ir)
+        self.assertIn("sext i8", ir)
+        self.assertIn("zext i8", ir)
+        self.assertEqual(self._build_and_run(
+            "fn main() -> i32 { return (298 as u8) as i32; }", "truncate"), 42)
+        _, ir = compile_source("fn main() -> i32 { return (-1 as i8) as i32 + 43; }")
+        self.assertIn("trunc i32 -1 to i8", ir)
+        self.assertIn("sext i8", ir)
+
+    def test_signed_and_unsigned_relations_use_distinct_predicates(self):
+        _, ir = compile_source(
+            "fn s(a: i8, b: i8) -> bool { return a < b; } "
+            "fn u(a: u8, b: u8) -> bool { return a < b; } "
+            "fn main() -> i32 { return if s((-1) as i8, 1 as i8) && u(1 as u8, 255 as u8) { 42 } else { 0 }; }")
+        self.assertIn("icmp slt i8", ir)
+        self.assertIn("icmp ult i8", ir)
+        self.assertEqual(self._build_and_run(
+            "fn main() -> i32 { return if (((-1) as u32) > (0 as u32)) { 42 } else { 0 }; }",
+            "unsigned"), 42)
+
+    def test_signed_and_unsigned_division_use_exact_width_operations(self):
+        _, ir = compile_source(
+            "fn s(a: i16, b: i16) -> i16 { return a / b; } "
+            "fn u(a: u64, b: u64) -> u64 { return a % b; } fn main() -> i32 { return 42; }")
+        self.assertIn("sdiv i16", ir)
+        self.assertIn("icmp eq i16 %a, -32768", ir)
+        self.assertIn("urem i64", ir)
+        self.assertNotIn("icmp eq i64 %a, -", ir)
+        self.assertEqual(self._build_and_run(
+            "fn main() -> i32 { return ((252 as u8) / (6 as u8)) as i32; }", "udiv"), 42)
+
+    def test_unsigned_division_has_no_minimum_overflow_guard(self):
+        # Only signed division can overflow, at MIN / -1. Extending that guard to
+        # unsigned types compares the dividend against integer_minimum, which is
+        # 0 for unsigned, and the divisor against the all-ones pattern, so 0 / 255
+        # at u8 traps instead of yielding 0.
+        for type_name in ("u8", "u16", "u32", "u64"):
+            with self.subTest(type_name=type_name):
+                _, ir = compile_source(
+                    f"fn f(a: {type_name}, b: {type_name}) -> {type_name} {{ return a / b; }} "
+                    "fn main() -> i32 { return 42; }")
+                guards = [line.strip() for line in ir.splitlines() if "icmp" in line]
+                self.assertEqual(len(guards), 1, guards)
+                self.assertIn(", 0", guards[0])
+
+    def test_unsigned_zero_divided_by_all_ones_does_not_trap(self):
+        require_clang()
+        source = ("fn z(x: u8) -> u8 { return x; } "
+                  "fn main() -> i32 { return if z(0 as u8) / z(255 as u8) == (0 as u8) { 42 } else { 0 }; }")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "udiv.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / ("udiv.exe" if os.name == "nt" else "udiv")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(run_executable(executable, timeout=10), 42)
+
+    def test_runtime_arithmetic_uses_the_operand_width(self):
+        # The acceptance program's narrow arithmetic is all constant-folded, so
+        # nothing reached the backend at a width other than i32. Pinning the
+        # instruction to i32 emits IR LLVM rejects outright.
+        expected = {"i8": "i8", "i16": "i16", "i32": "i32", "i64": "i64",
+                    "u8": "i8", "u16": "i16", "u32": "i32", "u64": "i64"}
+        for type_name, llvm in expected.items():
+            with self.subTest(type_name=type_name):
+                _, ir = compile_source(
+                    f"fn f(a: {type_name}, b: {type_name}) -> {type_name} {{ return a + b * a - b; }} "
+                    "fn main() -> i32 { return 42; }")
+                for instruction in ("add", "mul", "sub"):
+                    self.assertIn(f"= {instruction} {llvm} ", ir)
+
+    def test_runtime_unary_minus_uses_the_operand_width(self):
+        for type_name, llvm in (("i8", "i8"), ("i16", "i16"), ("i64", "i64")):
+            with self.subTest(type_name=type_name):
+                _, ir = compile_source(
+                    f"fn f(a: {type_name}) -> {type_name} {{ return -a; }} "
+                    "fn main() -> i32 { return 42; }")
+                self.assertIn(f"= sub {llvm} 0, %a", ir)
+
+    def test_narrow_and_wide_arithmetic_runs_natively(self):
+        require_clang()
+        cases = {
+            "i8": "fn id(x: i8) -> i8 { return x; } "
+                  "fn main() -> i32 { return if id(127 as i8) + id(1 as i8) == ((0 - 128) as i8) "
+                  "{ if -id(1 as i8) == ((0 - 1) as i8) { 42 } else { 0 } } else { 0 }; }",
+            "u8": "fn id(x: u8) -> u8 { return x; } "
+                  "fn main() -> i32 { return if id(255 as u8) + id(43 as u8) == (42 as u8) { 42 } else { 0 }; }",
+            "i64": "fn id(x: i64) -> i64 { return x; } "
+                   "fn main() -> i32 { return if id(2147483647 as i64) + id(1 as i64) > id(2147483647 as i64) "
+                   "{ if -id(42 as i64) == ((0 - 42) as i64) { 42 } else { 0 } } else { 0 }; }",
+            "i16": "fn id(x: i16) -> i16 { return x; } "
+                   "fn main() -> i32 { return if id(32767 as i16) + id(1 as i16) == ((0 - 32768) as i16) "
+                   "{ 42 } else { 0 }; }",
+            "u64": "fn id(x: u64) -> u64 { return x; } "
+                   "fn main() -> i32 { return if id(((0 - 1) as i64) as u64) / id(2 as u64) > id(1 as u64) "
+                   "{ 42 } else { 0 }; }",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for type_name, source in cases.items():
+                with self.subTest(type_name=type_name):
+                    path = Path(directory) / f"{type_name}.ocl"
+                    path.write_text(source, encoding="utf-8")
+                    executable = Path(directory) / (f"{type_name}.exe" if os.name == "nt" else type_name)
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                        capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(run_executable(executable, timeout=10), 42)
+
+    def test_each_signed_width_guards_its_own_minimum(self):
+        functions = " ".join(
+            f"fn f{width}(a: i{width}, b: i{width}) -> i{width} {{ return a / b; }}"
+            for width in (8, 16, 32, 64)
+        )
+        _, ir = compile_source(functions + " fn main() -> i32 { return 42; }")
+        for width, minimum in ((8, -128), (16, -32768), (32, -2147483648), (64, -9223372036854775808)):
+            self.assertIn(f"icmp eq i{width} %a, {minimum}", ir)
+
+    def test_narrow_signed_overflow_and_unsigned_zero_division_trap(self):
+        for name, source in (
+            ("i8overflow", "fn main() -> i32 { return (((128 as i8) / ((-1) as i8)) as i32); }"),
+            ("u8zero", "fn zero(x: u8) -> u8 { return x; } fn main() -> i32 { return ((42 as u8) / zero(0 as u8)) as i32; }"),
+        ):
+            with self.subTest(name=name):
+                require_clang()
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / f"{name}.ocl"
+                    path.write_text(source, encoding="utf-8")
+                    executable = Path(directory) / (f"{name}.exe" if os.name == "nt" else name)
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    assert_deterministic_trap(self, run_executable(executable, timeout=5))
+
+    def test_constants_wrap_at_their_declared_width(self):
+        _, ir = compile_source(
+            "const A: u8 = (255 as u8) + (43 as u8); "
+            "const B: i8 = (127 as i8) + (1 as i8); "
+            "fn main() -> i32 { return (A as i32) + (B as i32) + 128; }")
+        self.assertIn("zext i8 42 to i32", ir)
+        self.assertIn("sext i8 -128 to i32", ir)
+        self.assertEqual(self._build_and_run(
+            "const A: u8 = (255 as u8) + (43 as u8); "
+            "const B: i8 = (127 as i8) + (1 as i8); "
+            "fn main() -> i32 { return (A as i32) + (B as i32) + 128; }", "constwidth"), 42)
+
+    def test_bool_enum_and_unknown_type_casts_are_rejected(self):
+        self.assertDiagnostic("fn main() -> i32 { return true as i32; }", "E0241", "integer conversion")
+        self.assertDiagnostic("fn main() -> i32 { return 42 as bool; }", "E0241", "integer conversion")
+        self.assertDiagnostic("fn main() -> i32 { return 42 as i128; }", "E0200", "unknown type 'i128'")
+        self.assertDiagnostic(
+            "enum E { A } fn main() -> i32 { return E.A as i32; }", "E0241", "integer conversion")
+
+    def test_aggregate_storage_uses_each_integer_width(self):
+        elements = ",".join("0 as u64" for _ in range(256))
+        source = f"fn main() -> i32 {{ let full: [u64; 256] = [{elements}]; return 42; }}"
+        compile_source(source)
+        source = f"fn main() -> i32 {{ let full: [u64; 256] = [{elements}]; let extra: [u8; 1] = [0 as u8]; return 42; }}"
+        self.assertDiagnostic(source, "E0219", "2049 bytes")
 
 
 class OverflowSemanticsTests(unittest.TestCase):
