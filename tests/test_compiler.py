@@ -2317,6 +2317,119 @@ class Ocl11Tests(DiagnosticAssertions):
         self.assertDiagnostic(source, "E0219", "2049 bytes")
 
 
+class Ocl12Tests(DiagnosticAssertions):
+    def _build_and_run(self, source: str, name: str = "bits") -> int:
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / f"{name}.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / (f"{name}.exe" if os.name == "nt" else name)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return run_executable(executable, timeout=10)
+
+    def test_single_and_double_logical_tokens_remain_distinct(self):
+        self.assertEqual([token.lexeme for token in lex("& && | || ^ ~ << >>")[:-1]],
+                         ["&", "&&", "|", "||", "^", "~", "<<", ">>"])
+
+    def test_bitwise_and_shift_precedence(self):
+        source = ("fn main() -> i32 { return if "
+                  "(1 | 2 ^ 3 & 1) == 3 && (1 + 1 << 3 + 1) == 32 "
+                  "{ 42 } else { 0 }; }")
+        self.assertEqual(self._build_and_run(source, "precedence"), 42)
+
+    def test_bitwise_operations_use_every_integer_width(self):
+        expected = {"i8": "i8", "i16": "i16", "i32": "i32", "i64": "i64",
+                    "u8": "i8", "u16": "i16", "u32": "i32", "u64": "i64"}
+        for type_name, llvm_type in expected.items():
+            with self.subTest(type_name=type_name):
+                _, ir = compile_source(
+                    f"fn f(a: {type_name}, b: {type_name}) -> {type_name} {{ return ~(a & b | a ^ b); }} "
+                    "fn main() -> i32 { return 42; }")
+                for instruction in ("and", "or", "xor"):
+                    self.assertIn(f"= {instruction} {llvm_type} ", ir)
+                self.assertIn(f"xor {llvm_type}", ir)
+
+    def test_bitwise_and_shift_operands_must_match_integer_types(self):
+        self.assertDiagnostic("fn main() -> i32 { return true & false; }", "E0211", "matching integer")
+        self.assertDiagnostic("fn main() -> i32 { return (1 as u8) | (1 as i8); }", "E0211", "u8 and i8")
+        self.assertDiagnostic("fn main() -> i32 { return ~true; }", "E0211", "integer operand")
+        self.assertDiagnostic("fn main() -> i32 { return (1 as u8) << 1; }", "E0211", "u8 and i32")
+
+    def test_right_shift_selects_arithmetic_or_logical_by_signedness(self):
+        _, ir = compile_source(
+            "fn s(a: i8, n: i8) -> i8 { return a >> n; } "
+            "fn u(a: u8, n: u8) -> u8 { return a >> n; } fn main() -> i32 { return 42; }")
+        self.assertIn("ashr i8", ir)
+        self.assertIn("lshr i8", ir)
+        self.assertEqual(self._build_and_run(
+            "fn main() -> i32 { let s: i8 = ((-84) as i8) >> (1 as i8); "
+            "let u: u8 = (168 as u8) >> (2 as u8); return (s as i32) + (u as i32) + 42; }",
+            "rightshift"), 42)
+
+    def test_left_shift_wraps_at_the_selected_width(self):
+        self.assertEqual(self._build_and_run(
+            "fn id(x: u8) -> u8 { return x; } fn main() -> i32 { "
+            "return (id(149 as u8) << id(1 as u8)) as i32; }", "leftshift"), 42)
+
+    def test_constant_folding_matches_bitwise_runtime_semantics(self):
+        _, ir = compile_source(
+            "const MASK: u8 = ~(213 as u8); const ANSWER: u8 = ((MASK | (1 as u8)) ^ (1 as u8)); "
+            "fn main() -> i32 { return ANSWER as i32; }")
+        self.assertIn("zext i8 42 to i32", ir)
+
+    def test_invalid_constant_shift_counts_are_diagnostics(self):
+        self.assertDiagnostic(
+            "const X: u8 = (1 as u8) << (8 as u8); fn main() -> i32 { return 42; }",
+            "E0242", "between 0 and 7")
+        self.assertDiagnostic("fn main() -> i32 { return 1 << 32; }", "E0242", "between 0 and 31")
+
+    def test_computed_invalid_shift_counts_trap_deterministically(self):
+        for name, expression in (
+            ("width", "id(1 as i8) << id(8 as i8)"),
+            ("negative", "id(1 as i8) >> id((-1) as i8)"),
+        ):
+            with self.subTest(name=name):
+                require_clang()
+                source = f"fn id(x: i8) -> i8 {{ return x; }} fn main() -> i32 {{ return ({expression}) as i32; }}"
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / f"{name}.ocl"
+                    path.write_text(source, encoding="utf-8")
+                    executable = Path(directory) / (f"{name}.exe" if os.name == "nt" else name)
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    assert_deterministic_trap(self, run_executable(executable, timeout=5))
+
+    def test_shift_inside_if_records_the_safe_predecessor(self):
+        _, ir = compile_source(
+            "fn f(c: bool, x: u8, n: u8) -> u8 { return if c { x << n } else { 0 as u8 }; } "
+            "fn main() -> i32 { return f(true, 21 as u8, 1 as u8) as i32; }")
+        phi = next(line for line in ir.splitlines() if " = phi i8 " in line)
+        self.assertIn("%ocl.shift.safe.", phi)
+        self.assertEqual(self._build_and_run(
+            "fn f(c: bool, x: u8, n: u8) -> u8 { return if c { x << n } else { 0 as u8 }; } "
+            "fn main() -> i32 { return f(true, 21 as u8, 1 as u8) as i32; }", "shiftphi"), 42)
+
+    def test_constant_short_circuit_skips_invalid_shift_counts(self):
+        _, ir = compile_source(
+            "const N: i32 = 32; "
+            "const A: i32 = if true { 42 } else { 1 << N }; "
+            "const B: bool = false && ((1 << N) == 0); "
+            "fn main() -> i32 { return if B { 0 } else { A }; }")
+        self.assertIn("phi i32 [0, %ocl.if.then.0], [42, %ocl.if.else.0]", ir)
+        self.assertEqual(self._build_and_run(
+            "const N: i32 = 32; "
+            "const A: i32 = if true { 42 } else { 1 << N }; "
+            "const B: bool = false && ((1 << N) == 0); "
+            "fn main() -> i32 { return if B { 0 } else { A }; }", "lazyshift"), 42)
+
+
 class OverflowSemanticsTests(unittest.TestCase):
     """M2: i32 arithmetic is defined as two's-complement wrapping."""
 

@@ -50,6 +50,8 @@ ARITHMETIC_OPERATORS = frozenset(("+", "-", "*", "/", "%"))
 RELATIONAL_OPERATORS = frozenset(("<", "<=", ">", ">="))
 EQUALITY_OPERATORS = frozenset(("==", "!="))
 LOGICAL_OPERATORS = frozenset(("&&", "||"))
+BITWISE_OPERATORS = frozenset(("&", "|", "^"))
+SHIFT_OPERATORS = frozenset(("<<", ">>"))
 MAX_LOCAL_ARRAY_BYTES = 2_048
 
 
@@ -76,14 +78,14 @@ def _require_known_type(type_name: str, source: str, location: SourceLocation, *
     if arrays and array and array[1] <= 0:
         raise DiagnosticError("E0219", "array length must be greater than zero", source, location)
     if arrays and array and array[1] > 256:
-        raise DiagnosticError("E0219", "Prototype 0.11 arrays may contain at most 256 elements", source, location)
+        raise DiagnosticError("E0219", "Prototype 0.12 arrays may contain at most 256 elements", source, location)
     if structures is not None and str(type_name) in structures:
         return
     if enumerations is not None and str(type_name) in enumerations:
         return
     if isinstance(type_name, StructType):
         raise DiagnosticError("E0200", f"unknown type '{type_name}'", source, location)
-    raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.11 supports scalar, enumeration, and approved local aggregate types", source, location)
+    raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.12 supports scalar, enumeration, and approved local aggregate types", source, location)
 
 
 def _require_constant_expression(expression: Expression, constants: dict, source: str) -> None:
@@ -150,7 +152,7 @@ def _analyze(program: Program, source: str) -> None:
 
     constants = {}
     if len(program.constants) > 256:
-        raise DiagnosticError("E0238", "Prototype 0.11 allows at most 256 top-level constants", source, program.constants[256].location)
+        raise DiagnosticError("E0238", "Prototype 0.12 allows at most 256 top-level constants", source, program.constants[256].location)
     for constant in program.constants:
         if constant.name in constants:
             raise DiagnosticError("E0238", f"duplicate constant '{constant.name}'", source, constant.location)
@@ -193,7 +195,7 @@ def _analyze(program: Program, source: str) -> None:
         if array_bytes > MAX_LOCAL_ARRAY_BYTES:
             raise DiagnosticError(
                 "E0219",
-                f"function '{function.name}' declares {array_bytes} bytes of aggregates; Prototype 0.11 allows at most {MAX_LOCAL_ARRAY_BYTES}",
+                f"function '{function.name}' declares {array_bytes} bytes of aggregates; Prototype 0.12 allows at most {MAX_LOCAL_ARRAY_BYTES}",
                 source,
                 function.location,
             )
@@ -238,7 +240,7 @@ def _analyze_statements(statements, scope, declared, functions, function, source
         if isinstance(statement, (LetStatement, VarStatement)):
             _require_known_type(statement.type_name, source, statement.location, arrays=True, structures=structures, enumerations=enumerations)
             if statement.name in declared:
-                raise DiagnosticError("E0210", f"name '{statement.name}' is already declared in this function; OCL 0.11 has no shadowing", source, statement.location)
+                raise DiagnosticError("E0210", f"name '{statement.name}' is already declared in this function; OCL 0.12 has no shadowing", source, statement.location)
             if _array_type(statement.type_name) and not isinstance(statement.initializer, ArrayLiteral):
                 raise DiagnosticError("E0223", "array initializer must be an array literal in OCL 0.7", source, statement.initializer.location)
             if str(statement.type_name) in structures and not isinstance(statement.initializer, StructLiteral):
@@ -387,6 +389,16 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
                 if not is_integer(left) or left != right:
                     raise DiagnosticError("E0211", f"operator '{node.operator}' requires matching integer operands, got {left} and {right}", source, node.location)
                 types[id(node)] = "bool"
+            elif node.operator in BITWISE_OPERATORS:
+                if not is_integer(left) or left != right:
+                    raise DiagnosticError("E0211", f"operator '{node.operator}' requires matching integer operands, got {left} and {right}", source, node.location)
+                types[id(node)] = left
+            elif node.operator in SHIFT_OPERATORS:
+                if not is_integer(left) or left != right:
+                    raise DiagnosticError("E0211", f"operator '{node.operator}' requires matching integer operands, got {left} and {right}", source, node.location)
+                if isinstance(node.right, IntegerLiteral) and not 0 <= node.right.value < integer_width(left):
+                    raise DiagnosticError("E0242", f"shift count must be between 0 and {integer_width(left) - 1}", source, node.right.location)
+                types[id(node)] = left
             elif node.operator in EQUALITY_OPERATORS:
                 if _array_type(left) or _array_type(right):
                     raise DiagnosticError("E0211", f"operator '{node.operator}' does not support arrays in OCL 0.7", source, node.location)
@@ -429,7 +441,7 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
             operand = types[id(node.operand)]
             if node.operator == "!" and operand == "bool":
                 types[id(node)] = "bool"
-            elif node.operator == "-" and is_integer(operand):
+            elif node.operator in ("-", "~") and is_integer(operand):
                 types[id(node)] = operand
             else:
                 article = "a" if node.operator == "!" else "an"
@@ -563,6 +575,8 @@ def _evaluate_constants(program: Program, source: str | None = None) -> dict[str
     def apply_unary(node, operand, operand_type):
         if node.operator == "!":
             return (not operand), ScalarType("bool")
+        if node.operator == "~":
+            return wrap_integer(~operand, operand_type), operand_type
         return wrap_integer(-operand, operand_type), operand_type
 
     def apply_binary(node, left, left_type, right):
@@ -570,6 +584,18 @@ def _evaluate_constants(program: Program, source: str | None = None) -> dict[str
         if operator == "+": return wrap_integer(left + right, left_type), left_type
         if operator == "-": return wrap_integer(left - right, left_type), left_type
         if operator == "*": return wrap_integer(left * right, left_type), left_type
+        if operator == "&": return wrap_integer(left & right, left_type), left_type
+        if operator == "|": return wrap_integer(left | right, left_type), left_type
+        if operator == "^": return wrap_integer(left ^ right, left_type), left_type
+        if operator in ("<<", ">>"):
+            width = integer_width(left_type)
+            if right < 0 or right >= width:
+                fail("E0242", f"shift count must be between 0 and {width - 1}", node.location)
+            if operator == "<<":
+                return wrap_integer(left << right, left_type), left_type
+            if integer_is_signed(left_type):
+                return wrap_integer(left >> right, left_type), left_type
+            return wrap_integer((left & ((1 << width) - 1)) >> right, left_type), left_type
         if operator in ("/", "%"):
             if right == 0 or (integer_is_signed(left_type) and left == integer_minimum(left_type) and right == -1):
                 fail("E0217", "invalid division in compile-time constant", node.location)
