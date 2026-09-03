@@ -46,6 +46,12 @@ class TokenKind(Enum):
     BANG = auto()
     AND_AND = auto()
     OR_OR = auto()
+    AMPERSAND = auto()
+    PIPE = auto()
+    CARET = auto()
+    TILDE = auto()
+    SHIFT_LEFT = auto()
+    SHIFT_RIGHT = auto()
     LESS = auto()
     LESS_EQUAL = auto()
     GREATER = auto()
@@ -93,6 +99,8 @@ def lex(source: str) -> list[Token]:
             ">=": TokenKind.GREATER_EQUAL,
             "&&": TokenKind.AND_AND,
             "||": TokenKind.OR_OR,
+            "<<": TokenKind.SHIFT_LEFT,
+            ">>": TokenKind.SHIFT_RIGHT,
         }
         pair = source[index:index + 2]
         if pair in compound:
@@ -120,6 +128,10 @@ def lex(source: str) -> list[Token]:
             "!": TokenKind.BANG,
             ";": TokenKind.SEMICOLON,
             ".": TokenKind.DOT,
+            "&": TokenKind.AMPERSAND,
+            "|": TokenKind.PIPE,
+            "^": TokenKind.CARET,
+            "~": TokenKind.TILDE,
         }
         if char in single:
             tokens.append(Token(single[char], char, start))

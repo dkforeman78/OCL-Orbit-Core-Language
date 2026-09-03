@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.0 - Unreleased
+
+- Added exact-width integer bitwise `&`, `|`, `^`, and unary `~` operations.
+- Added `<<` and signed/unsigned `>>` with matching integer operands.
+- Added compile-time diagnostics and deterministic runtime traps for negative or out-of-width shift counts.
+- Extended compile-time constant folding with the same bitwise and shift semantics as runtime execution.
+- Added the `bitwise.ocl` native acceptance program.
+
 ## 0.11.0 - 2026-09-02
 
 - Added signed `i8`, `i16`, and `i64` and unsigned `u8`, `u16`, `u32`, and `u64` alongside `i32`.

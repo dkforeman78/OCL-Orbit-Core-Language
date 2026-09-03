@@ -1,0 +1,7 @@
+fn combine(value: u8, count: u8) -> u8 {
+    return (value << count) | (2 as u8);
+}
+
+fn main() -> i32 {
+    return combine(10 as u8, 2 as u8) as i32;
+}

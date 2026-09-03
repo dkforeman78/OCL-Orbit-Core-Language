@@ -68,7 +68,7 @@ FRAMES_PER_BLOCK_LEVEL = 1
 # from wherever the caller happens to be. Adding a precedence tier raises this
 # number; `test_frames_per_nesting_level_matches_the_parser` fails if it is
 # stale, so the guard cannot silently stop working.
-FRAMES_PER_LEVEL = 10
+FRAMES_PER_LEVEL = 14
 
 # Re-exported so the serialization guarantee is one lock across every phase that
 # temporarily changes the interpreter-global recursion limit.
@@ -158,7 +158,7 @@ class Parser:
         self.block_depth += 1
         if self.block_depth > MAX_BLOCK_DEPTH:
             self.block_depth -= 1
-            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.11 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
+            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.12 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
         try:
             statements: list[Statement] = []
             while not self._at(TokenKind.RIGHT_BRACE) and not self._at(TokenKind.EOF):
@@ -257,7 +257,7 @@ class Parser:
         if self.depth > MAX_EXPRESSION_DEPTH:
             raise DiagnosticError(
                 "E0101",
-                f"expression is nested too deeply; OCL 0.11 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                f"expression is nested too deeply; OCL 0.12 allows at most {MAX_EXPRESSION_DEPTH} levels",
                 self.source,
                 self.tokens[self.current].location,
             )
@@ -280,17 +280,45 @@ class Parser:
             expression = BinaryExpression(expression, operator.lexeme, self._equality(), operator.location)
         return expression
 
-    def _equality(self) -> Expression:
+    def _bitwise_or(self) -> Expression:
+        expression = self._bitwise_xor()
+        while self._match(TokenKind.PIPE):
+            operator = self.tokens[self.current - 1]
+            expression = BinaryExpression(expression, operator.lexeme, self._bitwise_xor(), operator.location)
+        return expression
+
+    def _bitwise_xor(self) -> Expression:
+        expression = self._bitwise_and()
+        while self._match(TokenKind.CARET):
+            operator = self.tokens[self.current - 1]
+            expression = BinaryExpression(expression, operator.lexeme, self._bitwise_and(), operator.location)
+        return expression
+
+    def _bitwise_and(self) -> Expression:
         expression = self._comparison()
-        while self._match(TokenKind.EQUAL_EQUAL) or self._match(TokenKind.BANG_EQUAL):
+        while self._match(TokenKind.AMPERSAND):
             operator = self.tokens[self.current - 1]
             expression = BinaryExpression(expression, operator.lexeme, self._comparison(), operator.location)
         return expression
 
+    def _equality(self) -> Expression:
+        expression = self._bitwise_or()
+        while self._match(TokenKind.EQUAL_EQUAL) or self._match(TokenKind.BANG_EQUAL):
+            operator = self.tokens[self.current - 1]
+            expression = BinaryExpression(expression, operator.lexeme, self._bitwise_or(), operator.location)
+        return expression
+
     def _comparison(self) -> Expression:
-        expression = self._sum()
+        expression = self._shift()
         while (self._match(TokenKind.LESS) or self._match(TokenKind.LESS_EQUAL)
                or self._match(TokenKind.GREATER) or self._match(TokenKind.GREATER_EQUAL)):
+            operator = self.tokens[self.current - 1]
+            expression = BinaryExpression(expression, operator.lexeme, self._shift(), operator.location)
+        return expression
+
+    def _shift(self) -> Expression:
+        expression = self._sum()
+        while self._match(TokenKind.SHIFT_LEFT) or self._match(TokenKind.SHIFT_RIGHT):
             operator = self.tokens[self.current - 1]
             expression = BinaryExpression(expression, operator.lexeme, self._sum(), operator.location)
         return expression
@@ -310,14 +338,14 @@ class Parser:
         return expression
 
     def _unary(self) -> Expression:
-        if self._match(TokenKind.BANG) or self._match(TokenKind.MINUS):
+        if self._match(TokenKind.BANG) or self._match(TokenKind.MINUS) or self._match(TokenKind.TILDE):
             operator = self.tokens[self.current - 1]
             self.depth += 1
             if self.depth > MAX_EXPRESSION_DEPTH:
                 self.depth -= 1
                 raise DiagnosticError(
                     "E0101",
-                    f"expression is nested too deeply; OCL 0.11 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                    f"expression is nested too deeply; OCL 0.12 allows at most {MAX_EXPRESSION_DEPTH} levels",
                     self.source,
                     operator.location,
                 )

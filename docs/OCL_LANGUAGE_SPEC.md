@@ -1,6 +1,6 @@
-# OCL Language Specification — Prototype 0.11
+# OCL Language Specification — Prototype 0.12
 
-This document describes only the implemented 0.11 subset. It is not a stability promise for later OCL releases.
+This document describes only the implemented 0.12 subset. It is not a stability promise for later OCL releases.
 
 ## Grammar
 
@@ -34,11 +34,15 @@ return-statement = "return" , expression , ";" ;
 expression       = logical-or ;
 logical-or       = logical-and , { "||" , logical-and } ;
 logical-and      = equality , { "&&" , equality } ;
-equality         = comparison , { ( "==" | "!=" ) , comparison } ;
-comparison       = sum , { ( "<" | "<=" | ">" | ">=" ) , sum } ;
+equality         = bitwise-or , { ( "==" | "!=" ) , bitwise-or } ;
+bitwise-or       = bitwise-xor , { "|" , bitwise-xor } ;
+bitwise-xor      = bitwise-and , { "^" , bitwise-and } ;
+bitwise-and      = comparison , { "&" , comparison } ;
+comparison       = shift , { ( "<" | "<=" | ">" | ">=" ) , shift } ;
+shift            = sum , { ( "<<" | ">>" ) , sum } ;
 sum              = term , { ( "+" | "-" ) , term } ;
 term             = unary , { ( "*" | "/" | "%" ) , unary } ;
-unary            = { "!" | "-" } , postfix ;
+unary            = { "!" | "-" | "~" } , postfix ;
 primary          = integer-literal | boolean-literal | array-literal | struct-literal | enum-variant | call | identifier
                  | "(" , expression , ")" | if-expression | match-expression ;
 enum-variant     = identifier , "." , identifier ;
@@ -55,7 +59,7 @@ call             = identifier , "(" , [ arguments ] , ")" ;
 arguments        = expression , { "," , expression } ;
 ```
 
-Identifiers contain ASCII letters, digits, and underscores and cannot begin with a digit. `as`, `break`, `const`, `continue`, `else`, `enum`, `false`, `fn`, `if`, `let`, `match`, `return`, `struct`, `true`, `var`, and `while` are reserved keywords. Whitespace is insignificant. Indexing, field access, and `as` conversion bind tighter than unary operators. The remaining precedence from highest to lowest is unary `!`/`-`, multiplication/division/remainder, addition/subtraction, relational comparison, equality, `&&`, then `||`. Binary operators at the same precedence are left-associative. Parentheses override precedence. Comments are not part of 0.11.
+Identifiers contain ASCII letters, digits, and underscores and cannot begin with a digit. `as`, `break`, `const`, `continue`, `else`, `enum`, `false`, `fn`, `if`, `let`, `match`, `return`, `struct`, `true`, `var`, and `while` are reserved keywords. Whitespace is insignificant. Indexing, field access, and `as` conversion bind tighter than unary operators. The remaining precedence from highest to lowest is unary `!`/`-`/`~`, multiplication/division/remainder, addition/subtraction, shifts, relational comparison, bitwise AND, bitwise XOR, bitwise OR, equality, `&&`, then `||`. Binary operators at the same precedence are left-associative. Parentheses override precedence. Comments are not part of 0.12.
 
 ## Semantics
 
@@ -77,6 +81,7 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
 - `main` must return `i32`. There are no implicit conversions between integer widths, signednesses, `bool`, or enum types.
 - Duplicate function names are rejected.
 - Arithmetic operators require two operands of exactly the same integer type and produce that type. Signed division truncates toward zero and signed remainder has the dividend's sign; unsigned division and remainder use unsigned values. Literal zero divisors are rejected with `E0217`; computed zero divisors and each signed type's `MIN / -1` deterministically trap at runtime. Relational operators require one matching integer type, use that type's signedness, and produce `bool`. Equality operators require matching operand types and produce `bool`.
+- Bitwise `&`, `|`, and `^` require two operands of exactly the same integer type and produce that type; unary `~` requires an integer and preserves its type. Shifts likewise require matching integer operand types and produce the left operand's type. Left shift wraps at the selected width. Signed right shift is arithmetic and unsigned right shift is logical. A shift count must be in `0..width-1`: a statically known invalid count is `E0242`, while a computed invalid count deterministically traps before an LLVM shift executes. These are Prototype 0.12 semantics and remain open to later profile-specific revision.
 - `as` explicitly converts between fixed-width integer types. Narrowing retains the low target-width bits. Widening sign-extends a signed source and zero-extends an unsigned source. An equal-width signedness change preserves the bit pattern. `bool` and enum values cannot be converted with `as`.
 - `if` is an expression. Its condition must be `bool`, both branches must have the same type, and only the selected branch executes. `else` is mandatory.
 - `!` requires `bool`. `&&` and `||` require `bool` operands and short-circuit: the right operand is evaluated only when needed.
@@ -115,4 +120,4 @@ Identifiers contain ASCII letters, digits, and underscores and cannot begin with
 
 ## Safety and compatibility status
 
-Prototype 0.11 has no source-level pointers, dynamic allocation, ownership, references, runtime globals, or concurrency, so it makes no permanent memory-model decision. Compile-time constants are substituted values rather than global objects. Mutable locals, fixed arrays, and local structures lower to private stack slots; that is an implementation detail, not a source reference model. Integer literals are range checked, array accesses are guarded, and arithmetic uses the provisional, defined wrapping behavior described above. Structure layout, enum discriminants, integer-conversion rules, the final bounds and overflow policies, broader variable/control-flow model, textual syntax, OCL ABI, and executable format remain provisional.
+Prototype 0.12 has no source-level pointers, dynamic allocation, ownership, references, runtime globals, or concurrency, so it makes no permanent memory-model decision. Compile-time constants are substituted values rather than global objects. Mutable locals, fixed arrays, and local structures lower to private stack slots; that is an implementation detail, not a source reference model. Integer literals are range checked, array accesses and shift counts are guarded, and arithmetic uses the provisional, defined wrapping behavior described above. Structure layout, enum discriminants, integer-conversion rules, the final bounds, overflow and shift policies, broader variable/control-flow model, textual syntax, OCL ABI, and executable format remain provisional.
