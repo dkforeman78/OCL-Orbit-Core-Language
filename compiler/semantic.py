@@ -88,6 +88,31 @@ def _require_known_type(type_name: str, source: str, location: SourceLocation, *
     raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.12 supports scalar, enumeration, and approved local aggregate types", source, location)
 
 
+def _static_integer(expression: Expression):
+    """The value of an expression a reader can see without running the program.
+
+    A shift count only ever has the left operand's type, and an unsuffixed
+    literal is always `i32`, so `IntegerLiteral` alone recognizes a statically
+    known count in exactly one of the eight widths. `(8 as u8)` is the only way
+    to write a `u8` count at all, so seeing through `as` is what makes the
+    diagnostic reach the other seven. Returns None when nothing is knowable.
+
+    The conversion chain is unwound iteratively: postfix `as` costs no parser
+    nesting depth, so its length is bounded only by the source, and recursing
+    would turn a large but entirely valid program into a `RecursionError`.
+    """
+    conversions = []
+    while isinstance(expression, CastExpression):
+        conversions.append(expression.type_name)
+        expression = expression.operand
+    if not isinstance(expression, IntegerLiteral):
+        return None
+    value = expression.value
+    for type_name in reversed(conversions):
+        value = wrap_integer(value, type_name)
+    return value
+
+
 def _require_constant_expression(expression: Expression, constants: dict, source: str) -> None:
     allowed = (BooleanLiteral, IntegerLiteral, IdentifierExpression, EnumVariantExpression,
                BinaryExpression, IfExpression, UnaryExpression, CastExpression, MatchExpression)
@@ -396,7 +421,8 @@ def _analyze_expression(expression: Expression, scope: dict[str, str], functions
             elif node.operator in SHIFT_OPERATORS:
                 if not is_integer(left) or left != right:
                     raise DiagnosticError("E0211", f"operator '{node.operator}' requires matching integer operands, got {left} and {right}", source, node.location)
-                if isinstance(node.right, IntegerLiteral) and not 0 <= node.right.value < integer_width(left):
+                count = _static_integer(node.right)
+                if count is not None and not 0 <= count < integer_width(left):
                     raise DiagnosticError("E0242", f"shift count must be between 0 and {integer_width(left) - 1}", source, node.right.location)
                 types[id(node)] = left
             elif node.operator in EQUALITY_OPERATORS:
