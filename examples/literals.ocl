@@ -1,0 +1,6 @@
+// A readable bit-mask example; expected exit status: 42.
+fn main() -> i32 {
+    let mask: i32 = 0x00_ff;
+    /* Keep the low byte of the pattern. */
+    return 0b0010_1010 & mask;
+}

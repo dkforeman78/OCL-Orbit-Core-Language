@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 from .diagnostics import DiagnosticError, SourceLocation
+from .literals import literal_parts
 
 
 class TokenKind(Enum):
@@ -90,6 +91,25 @@ def lex(source: str) -> list[Token]:
             continue
 
         start = location()
+        if source.startswith("//", index) or source.startswith("/*", index):
+            if source.startswith("//", index):
+                end = source.find("\n", index + 2)
+                if end == -1:
+                    end = len(source)
+            else:
+                closing = source.find("*/", index + 2)
+                if closing == -1:
+                    raise DiagnosticError("E0003", "unterminated block comment", source, start)
+                end = closing + 2
+            comment = source[index:end]
+            newlines = comment.count("\n")
+            if newlines:
+                line += newlines
+                column = len(comment.rsplit("\n", 1)[1]) + 1
+            else:
+                column += len(comment)
+            index = end
+            continue
         compound = {
             "->": TokenKind.ARROW,
             "=>": TokenKind.FAT_ARROW,
@@ -167,9 +187,19 @@ def lex(source: str) -> list[Token]:
             continue
         if char.isascii() and char.isdigit():
             end = index + 1
-            while end < len(source) and source[end].isascii() and source[end].isdigit():
+            while end < len(source) and (source[end].isalnum() or source[end] == "_"):
                 end += 1
-            tokens.append(Token(TokenKind.INTEGER, source[index:end], start))
+            spelling = source[index:end]
+            base, digits = literal_parts(spelling)
+            allowed = "0123456789abcdefABCDEF" if base == 16 else "01" if base == 2 else "0123456789"
+            if (not digits or any(
+                digit not in allowed and not (
+                    digit == "_" and offset > 0 and offset + 1 < len(digits)
+                    and digits[offset - 1] in allowed and digits[offset + 1] in allowed
+                ) for offset, digit in enumerate(digits)
+            )):
+                raise DiagnosticError("E0002", "malformed integer literal", source, start)
+            tokens.append(Token(TokenKind.INTEGER, spelling, start))
             column += end - index
             index = end
             continue

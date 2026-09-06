@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.0 - Unreleased
+
+- Added hexadecimal and binary integer literals and digit separators, retaining i32 literal bounds and explicit conversions.
+- Added line comments and non-nesting block comments with preserved source locations.
+- Added malformed-literal and unterminated-comment diagnostics and bounded, shared literal decoding.
+- Added the thirteenth native acceptance program, `literals.ocl`.
+
 ## 0.12.0 - 2026-09-06
 
 - Added exact-width integer bitwise `&`, `|`, `^`, and unary `~` operations.

@@ -44,7 +44,7 @@ from .lexer import Token, TokenKind
 from .stack import RECURSION_LIMIT_LOCK, reserved
 from .types import INTEGER_TYPES, ArrayType, EnumType, ScalarType, StructType, TypeRef
 
-_MAX_I32_DIGITS = len(str(I32_MAX))
+from .literals import bounded_integer
 
 # Recursive descent nests Python frames for calls and grouped expressions, so
 # the accepted depth is bounded deliberately here rather than left to whatever
@@ -158,7 +158,7 @@ class Parser:
         self.block_depth += 1
         if self.block_depth > MAX_BLOCK_DEPTH:
             self.block_depth -= 1
-            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.12 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
+            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.13 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
         try:
             statements: list[Statement] = []
             while not self._at(TokenKind.RIGHT_BRACE) and not self._at(TokenKind.EOF):
@@ -226,10 +226,7 @@ class Parser:
         self._expect(TokenKind.SEMICOLON, "expected ';' before array length")
         length = self._expect(TokenKind.INTEGER, "expected array length")
         self._expect(TokenKind.RIGHT_BRACKET, "expected ']' after array type")
-        significant = length.lexeme.lstrip("0") or "0"
-        # The semantic implementation cap is 256. Avoid feeding an arbitrarily
-        # long source numeral to int(), while still routing it to E0219.
-        normalized = int(significant) if len(significant) <= 3 else 257
+        normalized = bounded_integer(length.lexeme, 256)
         return ArrayType(ScalarType(element.lexeme), normalized)
 
     def _parameters(self) -> list[Parameter]:
@@ -257,7 +254,7 @@ class Parser:
         if self.depth > MAX_EXPRESSION_DEPTH:
             raise DiagnosticError(
                 "E0101",
-                f"expression is nested too deeply; OCL 0.12 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                f"expression is nested too deeply; OCL 0.13 allows at most {MAX_EXPRESSION_DEPTH} levels",
                 self.source,
                 self.tokens[self.current].location,
             )
@@ -345,17 +342,17 @@ class Parser:
                 self.depth -= 1
                 raise DiagnosticError(
                     "E0101",
-                    f"expression is nested too deeply; OCL 0.12 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                    f"expression is nested too deeply; OCL 0.13 allows at most {MAX_EXPRESSION_DEPTH} levels",
                     self.source,
                     operator.location,
                 )
             try:
                 if operator.kind is TokenKind.MINUS and self._at(TokenKind.INTEGER):
                     value = self._expect(TokenKind.INTEGER, "expected integer literal")
-                    significant = value.lexeme.lstrip("0") or "0"
-                    if len(significant) > len(str(I32_MAX + 1)) or int(significant) > I32_MAX + 1:
+                    magnitude = bounded_integer(value.lexeme, I32_MAX + 1)
+                    if magnitude > I32_MAX + 1:
                         raise DiagnosticError("E0203", "integer literal does not fit in i32", self.source, value.location)
-                    return self._postfix(IntegerLiteral(-int(significant), operator.location))
+                    return self._postfix(IntegerLiteral(-magnitude, operator.location))
                 return UnaryExpression(operator.lexeme, self._unary(), operator.location)
             finally:
                 self.depth -= 1
@@ -485,12 +482,10 @@ class Parser:
         return IfExpression(condition, then_expression, else_expression, start.location)
 
     def _integer(self, value: Token) -> IntegerLiteral:
-        # Reject over-long literals before int() runs: CPython refuses to convert
-        # strings past its digit limit, and that must not surface as a crash.
-        significant = value.lexeme.lstrip("0") or "0"
-        if len(significant) > _MAX_I32_DIGITS:
+        magnitude = bounded_integer(value.lexeme, I32_MAX)
+        if magnitude > I32_MAX:
             raise DiagnosticError("E0203", "integer literal does not fit in i32", self.source, value.location)
-        return IntegerLiteral(int(significant), value.location)
+        return IntegerLiteral(magnitude, value.location)
 
     def _at(self, kind: TokenKind) -> bool:
         return self.tokens[self.current].kind is kind
