@@ -2317,6 +2317,233 @@ class Ocl11Tests(DiagnosticAssertions):
         self.assertDiagnostic(source, "E0219", "2049 bytes")
 
 
+class Ocl12Tests(DiagnosticAssertions):
+    def _build_and_run(self, source: str, name: str = "bits") -> int:
+        require_clang()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / f"{name}.ocl"
+            path.write_text(source, encoding="utf-8")
+            executable = Path(directory) / (f"{name}.exe" if os.name == "nt" else name)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return run_executable(executable, timeout=10)
+
+    def test_single_and_double_logical_tokens_remain_distinct(self):
+        self.assertEqual([token.lexeme for token in lex("& && | || ^ ~ << >>")[:-1]],
+                         ["&", "&&", "|", "||", "^", "~", "<<", ">>"])
+
+    def test_bitwise_and_shift_precedence(self):
+        source = ("fn main() -> i32 { return if "
+                  "(1 | 2 ^ 3 & 1) == 3 && (1 + 1 << 3 + 1) == 32 "
+                  "{ 42 } else { 0 }; }")
+        self.assertEqual(self._build_and_run(source, "precedence"), 42)
+
+    def test_bitwise_operations_use_every_integer_width(self):
+        expected = {"i8": "i8", "i16": "i16", "i32": "i32", "i64": "i64",
+                    "u8": "i8", "u16": "i16", "u32": "i32", "u64": "i64"}
+        for type_name, llvm_type in expected.items():
+            with self.subTest(type_name=type_name):
+                _, ir = compile_source(
+                    f"fn f(a: {type_name}, b: {type_name}) -> {type_name} {{ return ~(a & b | a ^ b); }} "
+                    "fn main() -> i32 { return 42; }")
+                for instruction in ("and", "or", "xor"):
+                    self.assertIn(f"= {instruction} {llvm_type} ", ir)
+                self.assertIn(f"xor {llvm_type}", ir)
+
+    def test_bitwise_and_shift_operands_must_match_integer_types(self):
+        self.assertDiagnostic("fn main() -> i32 { return true & false; }", "E0211", "matching integer")
+        self.assertDiagnostic("fn main() -> i32 { return (1 as u8) | (1 as i8); }", "E0211", "u8 and i8")
+        self.assertDiagnostic("fn main() -> i32 { return ~true; }", "E0211", "integer operand")
+        self.assertDiagnostic("fn main() -> i32 { return (1 as u8) << 1; }", "E0211", "u8 and i32")
+
+    def test_right_shift_selects_arithmetic_or_logical_by_signedness(self):
+        _, ir = compile_source(
+            "fn s(a: i8, n: i8) -> i8 { return a >> n; } "
+            "fn u(a: u8, n: u8) -> u8 { return a >> n; } fn main() -> i32 { return 42; }")
+        self.assertIn("ashr i8", ir)
+        self.assertIn("lshr i8", ir)
+        self.assertEqual(self._build_and_run(
+            "fn main() -> i32 { let s: i8 = ((-84) as i8) >> (1 as i8); "
+            "let u: u8 = (168 as u8) >> (2 as u8); return (s as i32) + (u as i32) + 42; }",
+            "rightshift"), 42)
+
+    def test_left_shift_wraps_at_the_selected_width(self):
+        self.assertEqual(self._build_and_run(
+            "fn id(x: u8) -> u8 { return x; } fn main() -> i32 { "
+            "return (id(149 as u8) << id(1 as u8)) as i32; }", "leftshift"), 42)
+
+    def test_constant_folding_matches_bitwise_runtime_semantics(self):
+        _, ir = compile_source(
+            "const MASK: u8 = ~(213 as u8); const ANSWER: u8 = ((MASK | (1 as u8)) ^ (1 as u8)); "
+            "fn main() -> i32 { return ANSWER as i32; }")
+        self.assertIn("zext i8 42 to i32", ir)
+
+    def test_invalid_constant_shift_counts_are_diagnostics(self):
+        self.assertDiagnostic(
+            "const X: u8 = (1 as u8) << (8 as u8); fn main() -> i32 { return 42; }",
+            "E0242", "between 0 and 7")
+        self.assertDiagnostic("fn main() -> i32 { return 1 << 32; }", "E0242", "between 0 and 31")
+
+    def test_computed_invalid_shift_counts_trap_deterministically(self):
+        for name, expression in (
+            ("width", "id(1 as i8) << id(8 as i8)"),
+            ("negative", "id(1 as i8) >> id((-1) as i8)"),
+        ):
+            with self.subTest(name=name):
+                require_clang()
+                source = f"fn id(x: i8) -> i8 {{ return x; }} fn main() -> i32 {{ return ({expression}) as i32; }}"
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / f"{name}.ocl"
+                    path.write_text(source, encoding="utf-8")
+                    executable = Path(directory) / (f"{name}.exe" if os.name == "nt" else name)
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "oclc.py"), "build", str(path), "-o", str(executable)],
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    assert_deterministic_trap(self, run_executable(executable, timeout=5))
+
+    def test_shift_inside_if_records_the_safe_predecessor(self):
+        _, ir = compile_source(
+            "fn f(c: bool, x: u8, n: u8) -> u8 { return if c { x << n } else { 0 as u8 }; } "
+            "fn main() -> i32 { return f(true, 21 as u8, 1 as u8) as i32; }")
+        phi = next(line for line in ir.splitlines() if " = phi i8 " in line)
+        self.assertIn("%ocl.shift.safe.", phi)
+        self.assertEqual(self._build_and_run(
+            "fn f(c: bool, x: u8, n: u8) -> u8 { return if c { x << n } else { 0 as u8 }; } "
+            "fn main() -> i32 { return f(true, 21 as u8, 1 as u8) as i32; }", "shiftphi"), 42)
+
+    def test_constant_short_circuit_skips_invalid_shift_counts(self):
+        _, ir = compile_source(
+            "const N: i32 = 32; "
+            "const A: i32 = if true { 42 } else { 1 << N }; "
+            "const B: bool = false && ((1 << N) == 0); "
+            "fn main() -> i32 { return if B { 0 } else { A }; }")
+        self.assertIn("phi i32 [0, %ocl.if.then.0], [42, %ocl.if.else.0]", ir)
+        self.assertEqual(self._build_and_run(
+            "const N: i32 = 32; "
+            "const A: i32 = if true { 42 } else { 1 << N }; "
+            "const B: bool = false && ((1 << N) == 0); "
+            "fn main() -> i32 { return if B { 0 } else { A }; }", "lazyshift"), 42)
+
+    def test_unary_complement_runs_natively_at_every_width(self):
+        # The IR-only width test asserts `xor <type>` is present, but `&`, `|`
+        # and `^` all lower to `xor` too, so it passes even when `~` lowers to
+        # something else entirely. Only running the result distinguishes them.
+        for type_name, value, complement in (
+            ("i8", "(-43) as i8", "42"), ("u8", "213 as u8", "42"),
+            ("i16", "(-43) as i16", "42"), ("u16", "65493 as u16", "42"),
+            ("i32", "-43", "42"), ("u32", "(-43) as u32", "42"),
+            ("i64", "(-43) as i64", "42"), ("u64", "((-43) as i64) as u64", "42"),
+        ):
+            with self.subTest(type_name=type_name):
+                self.assertEqual(self._build_and_run(
+                    f"fn id(x: {type_name}) -> {type_name} {{ return x; }} "
+                    f"fn main() -> i32 {{ return (~id({value})) as i32; }}",
+                    f"complement_{type_name}"), int(complement))
+
+    def test_unary_complement_is_not_negation(self):
+        # `~x` and `-x` agree nowhere except x == -1, so a program whose two
+        # sides differ is what separates a complement from a sign flip.
+        self.assertEqual(self._build_and_run(
+            "fn id(x: i32) -> i32 { return x; } "
+            "fn main() -> i32 { return if ~id(5) == (-6) { 42 } else { 1 }; }",
+            "complement_not_negation"), 42)
+
+    def test_constant_folding_covers_bitwise_and(self):
+        # The other constant folding test uses `~`, `|` and `^` only, so `&`
+        # could fold as any of them and stay green.
+        _, ir = compile_source("const A: i32 = 58 & 46; fn main() -> i32 { return A; }")
+        self.assertIn("ret i32 42", ir)
+        self.assertEqual(self._build_and_run(
+            "const A: i32 = 58 & 46; const B: u8 = (250 as u8) & (43 as u8); "
+            "fn main() -> i32 { return if B == (42 as u8) { A } else { 1 }; }", "constand"), 42)
+
+    def test_constant_left_shift_wraps_at_the_declared_width(self):
+        # Every arithmetic consumer of a folded constant re-wraps, so a missing
+        # wrap here is invisible unless the raw value is compared.
+        self.assertEqual(self._build_and_run(
+            "const WRAPPED: bool = ((149 as u8) << (1 as u8)) == (42 as u8); "
+            "const SIGNED: bool = (((-107) as i8) << (1 as i8)) == (42 as i8); "
+            "fn main() -> i32 { return if WRAPPED && SIGNED { 42 } else { 1 }; }", "constshl"), 42)
+
+    def test_constant_right_shift_follows_the_operand_signedness(self):
+        # A negative signed value is the only input that tells `ashr` from
+        # `lshr`; the existing constant tests never fold one.
+        self.assertEqual(self._build_and_run(
+            "const S: i8 = ((-84) as i8) >> (1 as i8); "
+            "const U: u8 = (172 as u8) >> (1 as u8); "
+            "fn main() -> i32 { return if S == ((-42) as i8) && U == (86 as u8) { 42 } else { 1 }; }",
+            "constshr"), 42)
+
+    def test_statically_known_invalid_shift_counts_are_rejected_at_every_width(self):
+        # A shift count carries the left operand's type, and an unsuffixed
+        # literal is always i32, so a non-i32 count is always written `as`.
+        # Without seeing through the conversion the diagnostic reaches exactly
+        # one of the eight widths.
+        for type_name, width in (("i8", 8), ("u8", 8), ("i16", 16), ("u16", 16),
+                                 ("i32", 32), ("u32", 32), ("i64", 64), ("u64", 64)):
+            with self.subTest(type_name=type_name):
+                self.assertDiagnostic(
+                    f"fn f(x: {type_name}, y: {type_name}) -> {type_name} {{ "
+                    f"return x << ({width} as {type_name}); }} fn main() -> i32 {{ return 42; }}",
+                    "E0242", f"between 0 and {width - 1}")
+        for type_name in ("i8", "i16", "i32", "i64"):
+            with self.subTest(type_name=type_name, count="negative"):
+                self.assertDiagnostic(
+                    f"fn f(x: {type_name}) -> {type_name} {{ return x >> ((-1) as {type_name}); }} "
+                    "fn main() -> i32 { return 42; }",
+                    "E0242", "shift count must be between")
+
+    def test_a_statically_known_valid_shift_count_still_compiles(self):
+        # The widened diagnostic must not reject counts that are in range, and
+        # a narrowing conversion is judged on the value it actually produces.
+        for type_name, width in (("u8", 8), ("i8", 8), ("u64", 64), ("i64", 64)):
+            with self.subTest(type_name=type_name):
+                _, ir = compile_source(
+                    f"fn f(x: {type_name}) -> {type_name} {{ return x << (({width} - 1) as {type_name}); }} "
+                    "fn main() -> i32 { return 42; }")
+                self.assertIn("shl", ir)
+        self.assertDiagnostic(
+            "fn f(x: u8) -> u8 { return x << (300 as u8); } fn main() -> i32 { return 42; }",
+            "E0242", "between 0 and 7")
+        # `256 as u8` is the count 0. Judging the literal rather than the value
+        # the conversion produces would reject a program that is in range.
+        _, ir = compile_source(
+            "fn f(x: u8) -> u8 { return x << (256 as u8); } fn main() -> i32 { return 42; }")
+        self.assertIn("shl", ir)
+
+    def test_a_statically_known_shift_count_does_not_recurse_over_conversions(self):
+        # Postfix `as` costs no parser nesting depth, so a conversion chain is
+        # bounded only by the source. Reading the count through that chain must
+        # not turn a large but valid program into a RecursionError.
+        chain = "1 as u8" + " as u8" * 3000
+        _, ir = compile_source(
+            f"fn f(x: u8) -> u8 {{ return x << ({chain}); }} fn main() -> i32 {{ return 42; }}")
+        self.assertIn("shl", ir)
+        self.assertDiagnostic(
+            "fn f(x: u8) -> u8 { return x << (8 as u8" + " as u8" * 3000 + "); } "
+            "fn main() -> i32 { return 42; }",
+            "E0242", "between 0 and 7")
+
+    def test_the_constant_evaluator_bounds_a_shift_count_it_alone_can_see(self):
+        # A count named by another constant is invisible to the static check,
+        # so the evaluator's own range check is the only thing standing between
+        # a folded shift and an out-of-width count.
+        self.assertDiagnostic(
+            "const N: u8 = 8 as u8; const A: u8 = (1 as u8) << N; fn main() -> i32 { return 42; }",
+            "E0242", "between 0 and 7")
+        self.assertDiagnostic(
+            "const N: i32 = 32; const A: i32 = 1 << N; fn main() -> i32 { return 42; }",
+            "E0242", "between 0 and 31")
+        _, ir = compile_source(
+            "const N: u8 = 7 as u8; const A: u8 = (1 as u8) << N; fn main() -> i32 { return A as i32; }")
+        self.assertIn("zext i8 128 to i32", ir)
+
+
 class OverflowSemanticsTests(unittest.TestCase):
     """M2: i32 arithmetic is defined as two's-complement wrapping."""
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.12.0 - 2026-09-06
+
+- Added exact-width integer bitwise `&`, `|`, `^`, and unary `~` operations.
+- Added `<<` and signed/unsigned `>>` with matching integer operands.
+- Added compile-time diagnostics and deterministic runtime traps for negative or out-of-width shift counts.
+- Extended compile-time constant folding with the same bitwise and shift semantics as runtime execution.
+- Added the `bitwise.ocl` native acceptance program.
+
+### Fixed after independent review
+
+- A statically known invalid shift count is now `E0242` at every width, not only `i32`. A shift count carries the left operand's type and an unsuffixed literal is always `i32`, so `(8 as u8)` is the only way to write a `u8` count at all; matching on a bare integer literal left the diagnostic unreachable for seven of the eight widths, and the same expression was rejected inside a `const` but merely trapped at runtime inside a function. The count is read through the conversion chain iteratively, because postfix `as` costs no parser nesting depth. The widened diagnostic also shadows the only test that reached the constant evaluator's own range check, so that check is now covered by a count named by another constant, which the static check cannot see.
+- Covered runtime unary `~`. The width test asserts the IR contains `xor <type>`, which `&`, `|` and `^` already satisfy, so lowering `~` as `xor x, 0`, as a negation, or at a pinned `i32` width all left the suite green; only executing the result distinguishes them.
+- Covered constant folding of `&`, of a left shift that overflows its width, and of a right shift on a negative signed value. Every arithmetic consumer of a folded constant re-wraps, so a missing wrap is observable only where the raw value is compared.
+
 ## 0.11.0 - 2026-09-02
 
 - Added signed `i8`, `i16`, and `i64` and unsigned `u8`, `u16`, `u32`, and `u64` alongside `i32`.
