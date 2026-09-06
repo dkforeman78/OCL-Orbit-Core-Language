@@ -2,6 +2,8 @@
 
 `oclc` uses a deliberately small pipeline with separate modules:
 
+Prototype 0.13 adds numeric spelling validation and comment scanning in the lexer. Comments are skipped before operator tokenization, preserving original offsets and line/column locations. `compiler/literals.py` decodes validated numbers with a bounded accumulator shared by expression literals, negative literals, and array lengths. Radix and separators do not change the AST integer representation or LLVM lowering.
+
 1. `lexer` converts UTF-8 source text into located tokens.
 2. `parser` creates typed AST nodes.
 3. `semantic` validates names, types, bodies, and literal ranges.
