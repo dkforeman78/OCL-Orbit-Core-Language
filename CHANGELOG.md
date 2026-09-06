@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.12.0 - Unreleased
+## 0.12.0 - 2026-09-06
 
 - Added exact-width integer bitwise `&`, `|`, `^`, and unary `~` operations.
 - Added `<<` and signed/unsigned `>>` with matching integer operands.
