@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.13.0 - Unreleased
+## 0.13.0 - 2026-09-06
 
 - Added hexadecimal and binary integer literals and digit separators, retaining i32 literal bounds and explicit conversions.
 - Added line comments and non-nesting block comments with preserved source locations.

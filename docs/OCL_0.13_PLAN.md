@@ -1,6 +1,6 @@
 # OCL 0.13 — Integer Literals and Source Comments
 
-Status: scope approved; implementation complete and awaiting independent review.
+Status: implementation and independent review complete; release approved.
 Baseline: released v0.12.0, commit d595017ff169762f08fce11ecb089fa740864c0d.
 
 ## Purpose
