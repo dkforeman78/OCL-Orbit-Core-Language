@@ -7,6 +7,12 @@
 - Added malformed-literal and unterminated-comment diagnostics and bounded, shared literal decoding.
 - Added the thirteenth native acceptance program, `literals.ocl`.
 
+### Fixed after independent review
+
+- Covered the terminator search for a block comment. `/*` and `/*/` are both unterminated, because the star in `/*/` still belongs to the opener; searching for `*/` from the delimiter rather than past it makes three characters a complete comment, and no test distinguished the two.
+- Covered column tracking past a same-line block comment and past a numeric literal. A line comment always ends at a newline or EOF, so only a block comment leaves a token behind it on the same line to measure; and the column after a literal must step over the spelling, which radix prefixes, separators and leading zeroes all lengthen.
+- Pinned the diagnostic for an over-long array length to the element cap it exceeds. The parser's bounded decode and the semantic cap are separate numbers, and raising the parser's silently rerouted the message to the aggregate byte cap instead.
+
 ## 0.12.0 - 2026-09-06
 
 - Added exact-width integer bitwise `&`, `|`, `^`, and unary `~` operations.

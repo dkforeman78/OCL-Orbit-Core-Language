@@ -68,6 +68,50 @@ class LiteralTests(unittest.TestCase):
         self.assertEqual(caught.exception.location.line, 2)
         self.assertEqual(caught.exception.location.column, 1)
 
+    def test_a_block_comment_cannot_close_on_its_opening_star(self):
+        # `/*/` is an opener whose star is still the opener's own. Searching for
+        # the terminator from the start of the delimiter rather than past it
+        # would let three characters be a complete comment.
+        for source in ('/*/', 'a /*/ b', '/*', '/*x'):
+            with self.subTest(source=source):
+                with self.assertRaises(DiagnosticError) as caught:
+                    lex(source)
+                self.assertEqual(caught.exception.code, 'E0003')
+        self.assertEqual([t.lexeme for t in lex('/**/42')][:-1], ['42'])
+        self.assertEqual([t.lexeme for t in lex('/***/42')][:-1], ['42'])
+
+    def test_columns_advance_past_a_same_line_comment(self):
+        # A line comment is always followed by a newline or EOF, so only a block
+        # comment leaves a token behind it on the same line to measure.
+        for source in ('a /*note*/ b', 'a /**/ b', 'a /* é中 */ b'):
+            with self.subTest(source=source):
+                first, second = lex(source)[:2]
+                self.assertEqual((first.location.line, first.location.column), (1, 1))
+                self.assertEqual((second.location.line, second.location.column),
+                                 (1, source.index('b') + 1))
+
+    def test_columns_advance_by_the_width_of_a_numeric_spelling(self):
+        # The column must step over the literal as it was written, not over the
+        # value it denotes, so radix prefixes, separators and leading zeroes all
+        # have to count.
+        for spelling in ('42', '0x2a', '0b10_1010', '1_000', '00042', '0x7fff_ffff'):
+            with self.subTest(spelling=spelling):
+                source = f'{spelling} b'
+                token = lex(source)[1]
+                self.assertEqual((token.lexeme, token.location.line, token.location.column),
+                                 ('b', 1, len(spelling) + 2))
+
+    def test_an_over_large_array_length_names_the_element_cap(self):
+        # The parser's bounded decode and the semantic cap are two different
+        # numbers. If they drift apart, an over-long length is still rejected
+        # but stops naming the limit the programmer actually exceeded.
+        for length in ('257', '0x101', '0b1_0000_0001', '9' * 400):
+            with self.subTest(length=length[:16]):
+                with self.assertRaises(DiagnosticError) as caught:
+                    compile_source(f'fn main() -> i32 {{ let a: [i32; {length}] = [42]; return 42; }}')
+                self.assertEqual(caught.exception.code, 'E0219')
+                self.assertIn('at most 256 elements', str(caught.exception))
+
     def test_native_constants_conversions_and_comments(self):
         runner = test_compiler.Ocl12Tests()
         for type_name in ('i8','u8','i16','u16','i32','u32','i64','u64'):
