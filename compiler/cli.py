@@ -39,7 +39,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=("check", "emit-ir", "build"))
     parser.add_argument("source", type=Path)
     parser.add_argument("-o", "--output", type=Path)
+    parser.add_argument("--release", action="store_true", help="build native output with -O2 optimization")
     args = parser.parse_args(argv)
+    if args.release and args.command != "build":
+        parser.error("--release is only valid with build")
     try:
         ir = _read_and_compile(args.source)
         if args.command == "check":
@@ -63,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix="oclc-") as directory:
             ir_path = Path(directory).resolve() / "module.ll"
             ir_path.write_text(ir, encoding="utf-8")
-            command = [clang, str(ir_path)]
+            command = [clang, str(ir_path), "-O2" if args.release else "-O0"]
             # The current prototype has no runtime or C-library calls. On Windows,
             # linking directly to main keeps the bootstrap independent of the
             # MSVC CRT. These are PE/COFF linker flags, selected only by host OS.

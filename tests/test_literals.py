@@ -3,7 +3,7 @@ import unittest
 from compiler.driver import compile_source
 from compiler.diagnostics import DiagnosticError
 from compiler.lexer import lex, TokenKind
-import test_compiler
+from native_support import build_and_run
 
 
 class LiteralTests(unittest.TestCase):
@@ -113,9 +113,8 @@ class LiteralTests(unittest.TestCase):
                 self.assertIn('at most 256 elements', str(caught.exception))
 
     def test_native_constants_conversions_and_comments(self):
-        runner = test_compiler.Ocl12Tests()
         for type_name in ('i8','u8','i16','u16','i32','u32','i64','u64'):
             source = (f'const N: {type_name} = 0x2a as {type_name}; '
                       f'fn id(x: {type_name}) -> {type_name} {{ return x; }} '
                       f'fn main() -> i32 {{ /* compare */ return if id(0b10_1010 as {type_name}) == N {{ 42 }} else {{ 1 }}; }}')
-            self.assertEqual(runner._build_and_run(source, 'literal_' + type_name), 42)
+            self.assertEqual(build_and_run(self, source, 'literal_' + type_name, release=False), 42)

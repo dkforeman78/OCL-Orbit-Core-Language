@@ -2,6 +2,12 @@
 
 `oclc` uses a deliberately small pipeline with separate modules:
 
+Prototype 0.14 selects explicit Clang `-O0` for default native builds and `-O2`
+for `build --release`. Frontend validation and LLVM generation are identical in
+both modes. No fast-math, overflow flags, LTO, or CPU-specific tuning is added.
+`emit-ir` remains frontend IR. The test suite checks expected results and deliberate
+traps under both optimization modes without constraining optimized instruction shapes.
+
 Prototype 0.13 adds numeric spelling validation and comment scanning in the lexer. Comments are skipped before operator tokenization, preserving original offsets and line/column locations. `compiler/literals.py` decodes validated numbers with a bounded accumulator shared by expression literals, negative literals, and array lengths. Radix and separators do not change the AST integer representation or LLVM lowering.
 
 1. `lexer` converts UTF-8 source text into located tokens.

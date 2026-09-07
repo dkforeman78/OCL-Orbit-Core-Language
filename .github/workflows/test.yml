@@ -34,35 +34,8 @@ jobs:
       - name: Verify the toolchain
         run: python tools/check_clang_version.py
 
-      - name: Run tests
+      # Includes every acceptance program in both build modes, with execution timeouts.
+      - name: Run tests and dual-mode acceptance
         env:
           OCL_REQUIRE_CLANG: "1"
         run: python -m unittest discover -s tests -v
-
-      # Preserve earlier contracts and prove the 0.13 literal/comment milestone.
-      - name: Acceptance tests
-        shell: bash
-        run: |
-          python oclc.py build examples/hello.ocl
-          python oclc.py build examples/add.ocl
-          python oclc.py build examples/local.ocl
-          python oclc.py build examples/decisions.ocl
-          python oclc.py build examples/repeat.ocl
-          python oclc.py build examples/loop_control.ocl
-          python oclc.py build examples/arrays.ocl
-          python oclc.py build examples/structures.ocl
-          python oclc.py build examples/enums.ocl
-          python oclc.py build examples/constants.ocl
-          python oclc.py build examples/integers.ocl
-          python oclc.py build examples/bitwise.ocl
-          python oclc.py build examples/literals.ocl
-          if [ "$RUNNER_OS" = "Windows" ]; then suffix=.exe; else suffix=; fi
-          for program in hello add local decisions repeat loop_control arrays structures enums constants integers bitwise literals; do
-            exe="examples/${program}${suffix}"
-            set +e
-            "./$exe"
-            code=$?
-            set -e
-            echo "$program exit code: $code"
-            test "$code" -eq 42
-          done

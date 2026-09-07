@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.0 - Unreleased
+
+- Added `oclc build --release` selecting Clang `-O2`; default native builds explicitly select `-O0`.
+- Reject release mode on `check` and `emit-ir` before source/output access.
+- Extracted shared native test support preserving Clang requirements, execution timeouts, and trap handling.
+- Added both-mode arithmetic, trap, control-flow, and acceptance verification on every CI host; added `release.ocl`.
+
 ## 0.13.0 - 2026-09-06
 
 - Added hexadecimal and binary integer literals and digit separators, retaining i32 literal bounds and explicit conversions.
