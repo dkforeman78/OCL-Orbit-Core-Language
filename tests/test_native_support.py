@@ -10,6 +10,7 @@ whole native suite green while verifying much less than it appears to.
 import ctypes
 import os
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -98,6 +99,14 @@ class ExecutionBoundTests(unittest.TestCase):
 
 
 class TrapSignatureTests(unittest.TestCase):
+    def test_native_trap_signature_in_both_modes(self):
+        source = ('fn divide(x: i32) -> i32 { return 1 / x; } '
+                  'fn main() -> i32 { return divide(0); }')
+        for release in (False, True):
+            result = build_and_run(self, source, 'trap_signature', release=release)
+            print(f'TRAP_SIGNATURE platform={sys.platform} release={release} exit={result}', flush=True)
+            assert_deterministic_trap(self, result)
+
     def test_the_documented_trap_signature_is_accepted(self):
         for signature in native_support._TRAP_EXITS:
             with self.subTest(signature=signature):
