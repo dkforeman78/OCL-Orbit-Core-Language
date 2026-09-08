@@ -2,6 +2,8 @@
 
 ## 0.14.0 - Unreleased
 
+- Confirmed trap exits in both optimization modes on hosted Windows, Ubuntu, and macOS; narrowed POSIX trap assertions to the observed host signal and rejected unrelated aborts.
+
 - Added `oclc build --release` selecting Clang `-O2`; default native builds explicitly select `-O0`.
 - Reject release mode on `check` and `emit-ir` before source/output access.
 - Extracted shared native test support preserving Clang requirements, execution timeouts, and trap handling.

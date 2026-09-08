@@ -9,6 +9,7 @@ whole native suite green while verifying much less than it appears to.
 
 import ctypes
 import os
+import signal
 import subprocess
 import sys
 import unittest
@@ -99,6 +100,14 @@ class ExecutionBoundTests(unittest.TestCase):
 
 
 class TrapSignatureTests(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'POSIX signal contract')
+    def test_other_posix_signals_are_not_accepted_as_traps(self):
+        expected = -signal.SIGTRAP if sys.platform == 'darwin' else -signal.SIGILL
+        self.assertEqual(native_support._TRAP_EXITS, {expected})
+        for wrong in {-signal.SIGTRAP, -signal.SIGILL, -signal.SIGABRT} - {expected}:
+            with self.subTest(signal=wrong), self.assertRaises(self.failureException):
+                assert_deterministic_trap(self, wrong)
+
     def test_native_trap_signature_in_both_modes(self):
         source = ('fn divide(x: i32) -> i32 { return 1 / x; } '
                   'fn main() -> i32 { return divide(0); }')

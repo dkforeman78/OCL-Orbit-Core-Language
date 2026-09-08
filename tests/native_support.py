@@ -69,9 +69,10 @@ if os.name == "nt":
     def _exit_signature(code: int) -> int:
         return code & 0xFFFFFFFF
 else:
-    # LLVM lowers llvm.trap to SIGTRAP on macOS and commonly SIGILL (or an
-    # abort fallback) elsewhere. Raw integer division faults remain SIGFPE.
-    _TRAP_EXITS = {-signal.SIGTRAP, -signal.SIGILL, -signal.SIGABRT}
+    # Observed under both -O0 and -O2 on the supported hosted runners:
+    # macOS reports SIGTRAP; Ubuntu reports SIGILL. Do not accept arbitrary
+    # aborts as deliberate traps. A different host must validate its signature.
+    _TRAP_EXITS = {-signal.SIGTRAP} if sys.platform == "darwin" else {-signal.SIGILL}
     _UB_FAULTS = {-signal.SIGFPE: "arithmetic fault"}
     def _exit_signature(code: int) -> int:
         return code
