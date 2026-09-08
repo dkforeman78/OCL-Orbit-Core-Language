@@ -29,6 +29,11 @@ ARM64 validation are roadmap work, not 0.14 claims.
 .\hello.exe
 $LASTEXITCODE # 42
 
+.\oclc.cmd build examples\hello.ocl                      # default -O0, writes hello.exe
+.\oclc.cmd build --release examples\hello.ocl -o fast.exe # -O2
+.\fast.exe
+$LASTEXITCODE # 42
+
 .\oclc.cmd build examples\add.ocl -o add.exe
 .\add.exe
 $LASTEXITCODE # 42
@@ -70,10 +75,13 @@ inspect or retain the generated IR.
 
 Source files are read as UTF-8 and a leading byte-order mark is accepted.
 
-Exit codes: `0` success; `1` a diagnostic, a bad invocation, or a failed native
-build or link; `2` Clang not found; `70` an internal compiler error (a bug —
-please report it). Clang's own exit status is deliberately not forwarded, so it
-cannot collide with a reserved compiler code.
+Exit codes: `0` success; `1` a diagnostic, an unreadable or wrongly named source
+file, or a failed native build or link; `2` Clang not found, or a usage error the
+argument parser rejects — an unknown command or option, a missing argument, or
+`--release` outside `build`; `70` an internal compiler error (a bug — please
+report it). Clang's own exit status is deliberately not forwarded, so it cannot
+collide with a reserved compiler code. A script that needs to tell a missing
+toolchain from a mistyped command must read the message, not just the code.
 
 ## Tests
 

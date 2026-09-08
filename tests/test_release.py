@@ -1,12 +1,16 @@
 import contextlib
 import io
+import os
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from compiler import cli
-from native_support import build_and_run, assert_deterministic_trap, ROOT
+from native_support import (ROOT, assert_deterministic_trap, build_and_run,
+                            require_clang, run_executable)
 
 
 class ReleaseCliTests(unittest.TestCase):
@@ -37,6 +41,30 @@ class ReleaseCliTests(unittest.TestCase):
                 self.assertIn('--release is only valid with build', error.getvalue())
                 read.assert_not_called()
                 write.assert_not_called()
+
+
+class DefaultOutputNameTests(unittest.TestCase):
+    """`build` with no -o was only ever exercised by the acceptance job that
+    0.14 folded into the suite, and every test in the suite passes -o."""
+
+    def test_the_default_output_name_is_derived_from_the_source(self):
+        require_clang()
+        for release in (False, True):
+            with self.subTest(release=release), tempfile.TemporaryDirectory(prefix='ocl default ') as directory:
+                source = Path(directory) / 'answer.ocl'
+                source.write_text('fn main() -> i32 { return 42; }', encoding='utf-8')
+                command = [sys.executable, str(ROOT / 'oclc.py'), 'build', str(source)]
+                if release:
+                    command.append('--release')
+                result = subprocess.run(command, capture_output=True, text=True, timeout=180)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                expected = source.with_suffix('.exe' if os.name == 'nt' else '')
+                self.assertTrue(
+                    expected.is_file(),
+                    f'build reported success but wrote no {expected.name}; '
+                    f'the directory holds {sorted(p.name for p in Path(directory).iterdir())}',
+                )
+                self.assertEqual(run_executable(expected), 42)
 
 
 class ReleaseExecutionTests(unittest.TestCase):
