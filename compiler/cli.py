@@ -45,7 +45,26 @@ class DiagnosticArgumentParser(argparse.ArgumentParser):
         super().error(message)
 
 
+def _utf8_diagnostics() -> None:
+    """Render diagnostics as UTF-8 so the caret keeps marking the named column.
+
+    stderr defaults to the locale encoding with backslashreplace, so a character
+    the locale cannot encode is replaced by an escape that is wider than the
+    character it stands for: one astral code point becomes ten ASCII ones, and
+    the caret computed from code-point columns then lands mid-escape. Guarded
+    because a redirected stderr in tests is not a reconfigurable text stream.
+    """
+    reconfigure = getattr(sys.stderr, "reconfigure", None)
+    if reconfigure is None:
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_diagnostics()
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = DiagnosticArgumentParser(prog="oclc", description="Orbit Core Language compiler prototype")
     # Select error rendering even when argparse cannot finish parsing. Respect

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from compiler import cli
+from compiler.driver import compile_source
 from compiler.diagnostics import DiagnosticError, InternalCompilerError, SourceLocation
 
 
@@ -116,6 +117,88 @@ class JsonDiagnosticsTests(unittest.TestCase):
                 self.assertEqual(plain, structured)
                 self.assertEqual(structured[0], 0)
                 self.assertEqual(structured[2], '')
+
+    def test_usage_diagnostics_name_no_file(self):
+        # A usage error happens before any source is identified, so naming one
+        # would attribute the failure to a file the compiler never looked at.
+        for args in (['--diagnostic-format=json'],
+                     ['wat', 'missing.ocl', '--diagnostic-format=json'],
+                     ['check', 'missing.ocl', '--release', '--diagnostic-format=json'],
+                     ['check', 'missing.ocl', '--unknown', '--diagnostic-format=json']):
+            with self.subTest(args=args):
+                with mock.patch.object(cli, '_read_and_compile'):
+                    code, out, err = self.invoke(args)
+                self.assertEqual(code, 2)
+                self.assertIsNone(self.record(err)['file'])
+
+    def test_external_tool_failure_is_a_toolchain_diagnostic(self):
+        # Clang's message is carried verbatim as a toolchain failure. Labelling
+        # it `source` would present an external tool's text as an OCL diagnostic
+        # about the user's program.
+        with mock.patch.object(cli, '_read_and_compile', return_value='IR'), \
+                mock.patch.object(cli, '_clang', return_value='clang'), \
+                mock.patch.object(cli.subprocess, 'run',
+                                  return_value=subprocess.CompletedProcess([], 3, '', 'clang exploded\n')):
+            code, out, err = self.invoke(['build', 'file.ocl', '--diagnostic-format=json'])
+        self.assertEqual(code, 1)
+        data = self.record(err)
+        self.assertEqual(data['kind'], 'toolchain')
+        self.assertIsNone(data['code'])
+        self.assertIsNone(data['location'])
+
+    def test_abbreviated_and_ambiguous_options_are_rejected(self):
+        # Accepting prefixes would let a future option silently change what an
+        # existing abbreviation means.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'good.ocl'
+            path.write_text('fn main() -> i32 { return 42; }', encoding='utf-8')
+            for args in (['check', str(path), '--diag=json'],
+                         ['check', str(path), '--diagnostic-f=json'],
+                         ['build', str(path), '--rel'],
+                         ['build', str(path), '--out', str(Path(directory) / 'x.exe')]):
+                with self.subTest(args=args[-2:]):
+                    code, out, err = self.invoke(args)
+                    self.assertEqual(code, 2, f'{args} was accepted; abbreviations must be rejected')
+
+    def test_an_invalid_format_value_is_a_text_usage_error(self):
+        # Only an explicit `json` selects JSON. Treating "not text" as JSON would
+        # answer an unusable request in a format the caller never asked for.
+        for value in ('xml', 'JSON', 'jsonl', ''):
+            with self.subTest(value=value):
+                code, out, err = self.invoke(['check', 'missing.ocl', f'--diagnostic-format={value}'])
+                self.assertEqual(code, 2)
+                self.assertFalse(err.lstrip().startswith('{'),
+                                 f'--diagnostic-format={value} produced JSON: {err[:80]}')
+                self.assertIn('usage:', err)
+
+    def test_a_carriage_return_never_reaches_the_reported_source_line(self):
+        # The CLI normalizes newlines, but a direct API caller may pass CRLF
+        # text straight through, and a trailing CR would land in JSON output.
+        source = 'fn main() -> i32 { return 1; }\r\n@\r\n'
+        with self.assertRaises(DiagnosticError) as caught:
+            compile_source(source)
+        self.assertEqual(caught.exception.source_line(), '@')
+        self.assertEqual(caught.exception.as_dict('a.ocl')['source_line'], '@')
+
+    def test_the_caret_marks_the_named_column_for_non_ascii_source(self):
+        # stderr defaults to the locale encoding, which replaces a character it
+        # cannot encode with a wider escape and pushes the reported line out
+        # from under the caret. Run the real CLI so a real stream is used.
+        for label, text in (('astral', '/* \U0001F600 */ @'),
+                            ('cjk', '/* \u4e2d\u6587 */ @'),
+                            ('accented', '/* \u00e9 */ @'),
+                            ('ascii', '/* xy */ @')):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / 'wide.ocl'
+                path.write_text(text, encoding='utf-8')
+                result = subprocess.run(
+                    [sys.executable, str(Path(__file__).parents[1] / 'oclc.py'), 'check', str(path)],
+                    capture_output=True, timeout=60)
+                rendered = result.stderr.decode('utf-8')
+                body, caret = rendered.splitlines()[-2:]
+                body = body.split('|', 1)[1][1:]
+                caret = caret.split('|', 1)[1][1:]
+                self.assertEqual(caret.index('^'), body.index('@'))
 
     def test_raw_location_and_tab_rendering(self):
         source = '\treturn @;'
