@@ -161,6 +161,61 @@ class ModuleTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'E0300')
         read.assert_not_called()
 
+    def test_a_module_resolving_outside_the_entry_directory_is_rejected(self):
+        # The symlink test above is the only other cover for this check and it
+        # skips wherever the host denies symlink creation, so on those hosts the
+        # containment rule can be deleted without a single test noticing.
+        # Redirecting resolution keeps the invariant pinned on every host.
+        self.write('main.ocl', 'import a; fn main() -> i32 {return 42;}')
+        self.write('a.ocl', '')
+        with tempfile.TemporaryDirectory(prefix='ocl outside ') as outside:
+            escaped = Path(outside) / 'a.ocl'
+            escaped.write_text('', encoding='utf-8')
+            real_resolve = Path.resolve
+
+            def redirect(self, *args, **kwargs):
+                resolved = real_resolve(self, *args, **kwargs)
+                return real_resolve(escaped) if resolved.name == 'a.ocl' else resolved
+
+            with mock.patch.object(Path, 'resolve', redirect):
+                error = self.diagnostic('E0305')
+            self.assertIn('outside entry directory', error.message)
+
+    def test_a_diamond_is_admitted_at_the_file_bound(self):
+        # The bound counts unique files, so revisiting an already-compiled
+        # module must not consume budget. A pure chain never revisits anything,
+        # so only a diamond reaching the limit exercises the ordering between
+        # the already-finished short circuit and the limit check.
+        padding = 252
+        imports = ''.join(f'import p{index}; ' for index in range(padding))
+        # entry + padding + a + b + shared == 256 unique files
+        self.write('main.ocl', imports + 'import a; import b; fn main() -> i32 {return n();}')
+        for index in range(padding):
+            self.write(f'p{index}.ocl', '')
+        self.write('a.ocl', 'import shared;')
+        self.write('b.ocl', 'import shared;')
+        self.write('shared.ocl', 'fn n() -> i32 {return 42;}')
+        program, _ = compile_file(self.root / 'main.ocl')
+        self.assertEqual(len(program.functions), 2)
+        self.write('over.ocl', '')
+        self.write('main.ocl', imports + 'import a; import b; import over; fn main() -> i32 {return n();}')
+        self.diagnostic('E0304')
+
+    def test_a_module_name_differing_only_in_case_is_one_file(self):
+        # On a case-insensitive host both spellings name the same file, so the
+        # second import is a duplicate rather than a second copy of the
+        # declarations. On a case-sensitive host they are separate files.
+        self.write('math.ocl', 'fn add(a: i32, b: i32) -> i32 {return a + b;}')
+        self.write('main.ocl', 'import math; import Math; fn main() -> i32 {return add(20, 22);}')
+        insensitive = (self.root / 'MATH.ocl').exists()
+        if insensitive:
+            self.diagnostic('E0302')
+            self.write('main.ocl', 'import Math; fn main() -> i32 {return add(20, 22);}')
+            program, _ = compile_file(self.root / 'main.ocl')
+            self.assertEqual(len(program.functions), 2)
+        else:
+            self.diagnostic('E0301')
+
     def test_symlink_outside_root_is_rejected(self):
         self.write('main.ocl', 'import alias; fn main() -> i32 {return 42;}')
         with tempfile.TemporaryDirectory() as directory:

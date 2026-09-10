@@ -7,6 +7,12 @@
 - Added `compile_file` and source-owned locations for text/JSON dependency diagnostics; retained filesystem-free `compile_source`.
 - Added a fifteenth, multi-file acceptance program in both native build modes.
 
+### Fixed after independent review
+
+- Pinned the entry-directory containment rule on every host. Its only cover was the symlink test, which skips wherever the host denies symlink creation — including this Windows development machine — so deleting the check left the suite green. The rule is now also exercised by redirecting resolution, independently of filesystem privileges.
+- Pinned that revisiting an already-compiled module does not consume file budget. The bound counts unique files, but the existing boundary test uses a pure chain, which never revisits anything; only a diamond that reaches the limit exercises the ordering between the already-finished short circuit and the limit check.
+- Covered module identity for names differing only in case, which resolve to one file on a case-insensitive host and to distinct files elsewhere.
+
 ## 0.15.0 - Unreleased
 
 - Added versioned JSON diagnostics on stderr for source, usage, I/O, toolchain, and detected internal compiler errors.
