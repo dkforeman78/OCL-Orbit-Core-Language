@@ -1,6 +1,6 @@
 # OCL — Orbit Core Language
 
-OCL Compiler Prototype 0.13 adds hexadecimal/binary literals, digit separators, and source comments.
+OCL Compiler Prototype 0.14 adds optimized release builds and verification in both build modes.
 
 ## Prerequisites
 
@@ -13,11 +13,11 @@ OCL Compiler Prototype 0.13 adds hexadecimal/binary literals, digit separators, 
   back to another compiler. Run `python tools/check_clang_version.py` to confirm
   the toolchain oclc will use.
 - A platform linker supported by Clang. The LLVM Windows installer includes
-  `lld-link`, which is sufficient for Prototype 0.13.
+  `lld-link`, which is sufficient for Prototype 0.14.
 
 The prototype is tested in CI on Windows, Linux, and macOS with Python 3.11 and
 3.12. Windows x86-64 is the primary development host. Cross-compilation and
-ARM64 validation are roadmap work, not 0.13 claims.
+ARM64 validation are roadmap work, not 0.14 claims.
 
 ## Use
 
@@ -27,6 +27,11 @@ ARM64 validation are roadmap work, not 0.13 claims.
 .\oclc.cmd emit-ir examples\hello.ocl -o hello.ll
 .\oclc.cmd build examples\hello.ocl -o hello.exe
 .\hello.exe
+$LASTEXITCODE # 42
+
+.\oclc.cmd build examples\hello.ocl                      # default -O0, writes hello.exe
+.\oclc.cmd build --release examples\hello.ocl -o fast.exe # -O2
+.\fast.exe
 $LASTEXITCODE # 42
 
 .\oclc.cmd build examples\add.ocl -o add.exe
@@ -70,12 +75,25 @@ inspect or retain the generated IR.
 
 Source files are read as UTF-8 and a leading byte-order mark is accepted.
 
-Exit codes: `0` success; `1` a diagnostic, a bad invocation, or a failed native
-build or link; `2` Clang not found; `70` an internal compiler error (a bug —
-please report it). Clang's own exit status is deliberately not forwarded, so it
-cannot collide with a reserved compiler code.
+Exit codes: `0` success; `1` a diagnostic, an unreadable or wrongly named source
+file, or a failed native build or link; `2` Clang not found, or a usage error the
+argument parser rejects — an unknown command or option, a missing argument, or
+`--release` outside `build`; `70` an internal compiler error (a bug — please
+report it). Clang's own exit status is deliberately not forwarded, so it cannot
+collide with a reserved compiler code. A script that needs to tell a missing
+toolchain from a mistyped command must read the message, not just the code.
 
 ## Tests
+
+Native builds default to explicit Clang `-O0`. Use `oclc build --release program.ocl`
+to select `-O2`, optionally with `-o` for the output path. `--release` is valid only
+for `build`; `check` and `emit-ir` reject it before reading source or creating output.
+`emit-ir` still emits frontend LLVM IR. Both native modes preserve the same language
+semantics; optimization levels are provisional toolchain policy. Debug symbols,
+source-level debugging, LTO, and native-CPU tuning are not included.
+
+CI runs all fourteen acceptance programs in both modes, alongside tests for wrapping
+arithmetic, deterministic traps, lazy branches, and aggregate/loop behavior.
 
 ```powershell
 python -m unittest discover -s tests -v
@@ -94,13 +112,13 @@ minimum.
 
 ## Scope and limitations
 
-Prototype 0.13 adds integer notation and comments to the 0.12 language. See [the language specification](docs/OCL_LANGUAGE_SPEC.md) and [architecture overview](docs/ARCHITECTURE.md).
+Prototype 0.14 adds optimized builds while preserving the 0.13 source language. See [the language specification](docs/OCL_LANGUAGE_SPEC.md) and [architecture overview](docs/ARCHITECTURE.md).
 
 There is intentionally no runtime or aggregate constant, constant function call, enum payload, wildcard or guarded match arm, type inference, uninitialized variable, aggregate parameters or returns, nested aggregates, aggregate copying or equality, slices, methods, rotate operations, stable structure or enum representation, `else if`, `for`, labeled loop control, floating point, global storage, `.oxr`/`.ofx` generation, custom linker, stabilized OCL ABI, ownership model, package manager, or standard library yet. Native builds use the host format until the canonical Orbit executable specification is supplied.
 
 Windows executables are linked without the MSVC C runtime and enter directly at
 `main`, which avoids an unnecessary Visual Studio dependency. This holds for
-0.13's functions, locals, constants, guarded arithmetic and shifts, loop control, bounded local arrays, local structures, and enums, and the
+0.14's functions, locals, constants, guarded arithmetic and shifts, loop control, bounded local arrays, local structures, and enums, and the
 conditions that would invalidate it —
 frames larger than a page, static initializers, any C runtime or system-library
 call, or a need for `argc`/`argv` — are listed in
@@ -108,4 +126,4 @@ call, or a need for `argc`/`argv` — are listed in
 and C ABI linking strategy must be designed before any of those appear.
 The Windows-only linker flags assume Clang's PE/COFF-compatible linker interface;
 they do not select or stabilize a target triple. Clang selects the native host
-target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.13 claim.
+target. Windows x86-64 is verified; Windows ARM64 is not yet a 0.14 claim.

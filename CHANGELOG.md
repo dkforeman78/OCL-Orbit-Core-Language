@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.14.0 - 2026-09-10
+
+- Confirmed trap exits in both optimization modes on hosted Windows, Ubuntu, and macOS; narrowed POSIX trap assertions to the observed host signal and rejected unrelated aborts.
+
+- Added `oclc build --release` selecting Clang `-O2`; default native builds explicitly select `-O0`.
+- Reject release mode on `check` and `emit-ir` before source/output access.
+- Extracted shared native test support preserving Clang requirements, execution timeouts, and trap handling.
+- Added both-mode arithmetic, trap, control-flow, and acceptance verification on every CI host; added `release.ocl`.
+
+### Fixed after independent review
+
+- Covered the shared native test helper itself. Every native claim in the suite is routed through it and nothing checked that it keeps its own promises: dropping or inverting its `--release` argument left the entire dual-mode execution suite green while building `-O0` twice, and removing the execution timeout, the Windows error-mode restoration, the `OCL_REQUIRE_CLANG` escalation, the failed-build assertion, or the trap-versus-undefined-behaviour distinction each did the same.
+- Covered the default output name. `build` with no `-o` was exercised only by the acceptance job this milestone folded into the suite, and every remaining test passes `-o`; a build that wrote no file at all still reported success.
+- Documented that argument-parser usage errors, `--release` outside `build` included, exit `2` — the code the README otherwise reserves for a missing Clang — and added the release build to the command reference.
+
 ## 0.13.0 - 2026-09-06
 
 - Added hexadecimal and binary integer literals and digit separators, retaining i32 literal bounds and explicit conversions.
