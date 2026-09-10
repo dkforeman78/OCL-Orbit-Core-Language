@@ -1,6 +1,6 @@
 # OCL 0.14 — Release Builds and Optimization Verification
 
-Status: scope approved; implementation complete, pending independent review.
+Status: implementation and independent review complete; release approved.
 Baseline: v0.13.0, merge commit 50683a8882717749e65a0b8a5f06a9fed4dca5fb.
 
 ## Purpose

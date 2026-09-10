@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.14.0 - Unreleased
+## 0.14.0 - 2026-09-10
 
 - Confirmed trap exits in both optimization modes on hosted Windows, Ubuntu, and macOS; narrowed POSIX trap assertions to the observed host signal and rejected unrelated aborts.
 
