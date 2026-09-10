@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.0 - Unreleased
+
+- Added versioned JSON diagnostics on stderr for source, usage, I/O, toolchain, and detected internal compiler errors.
+- Fixed caret alignment after tabs and source-line selection with Unicode separators inside comments.
+- Documented source coordinate conventions and required full long-option spellings for deterministic format selection.
+
 ## 0.14.0 - 2026-09-10
 
 - Confirmed trap exits in both optimization modes on hosted Windows, Ubuntu, and macOS; narrowed POSIX trap assertions to the observed host signal and rejected unrelated aborts.
