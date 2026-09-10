@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 from .diagnostics import DiagnosticError, InternalCompilerError, diagnostic_record
-from .driver import compile_source
+from .driver import compile_file
 
 
 def _clang() -> str | None:
@@ -29,10 +29,7 @@ def _clang() -> str | None:
 def _read_and_compile(path: Path) -> str:
     if path.suffix.lower() != ".ocl":
         raise ValueError("input file must use the .ocl extension")
-    # utf-8-sig so a byte-order mark, which several Windows editors write by
-    # default, does not reach the lexer as an invalid token.
-    source = path.read_text(encoding="utf-8-sig")
-    return compile_source(source, path.name)[1]
+    return compile_file(path)[1]
 
 
 class DiagnosticArgumentParser(argparse.ArgumentParser):

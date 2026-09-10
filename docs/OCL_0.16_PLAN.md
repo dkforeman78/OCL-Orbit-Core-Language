@@ -1,6 +1,6 @@
 # OCL 0.16 — Modules and Imports
 
-Status: implementation preparation under the instruction to proceed through the roadmap.
+Status: implementation complete, pending independent review.
 Depends on the 0.15 diagnostics work; 0.15 review fixes must be integrated before release.
 
 ## Bounded first module model
