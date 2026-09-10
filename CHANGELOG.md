@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.0 - Unreleased
+
+- Added root-relative `import name;` with iterative resolution, cycle and duplicate detection, and a 256-file limit.
+- Added cross-file functions, constants, enums and structures in one provisional flat compilation unit.
+- Added `compile_file` and source-owned locations for text/JSON dependency diagnostics; retained filesystem-free `compile_source`.
+- Added a fifteenth, multi-file acceptance program in both native build modes.
+
 ## 0.15.0 - Unreleased
 
 - Added versioned JSON diagnostics on stderr for source, usage, I/O, toolchain, and detected internal compiler errors.

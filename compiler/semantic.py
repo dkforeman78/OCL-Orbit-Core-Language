@@ -78,14 +78,14 @@ def _require_known_type(type_name: str, source: str, location: SourceLocation, *
     if arrays and array and array[1] <= 0:
         raise DiagnosticError("E0219", "array length must be greater than zero", source, location)
     if arrays and array and array[1] > 256:
-        raise DiagnosticError("E0219", "Prototype 0.15 arrays may contain at most 256 elements", source, location)
+        raise DiagnosticError("E0219", "Prototype 0.16 arrays may contain at most 256 elements", source, location)
     if structures is not None and str(type_name) in structures:
         return
     if enumerations is not None and str(type_name) in enumerations:
         return
     if isinstance(type_name, StructType):
         raise DiagnosticError("E0200", f"unknown type '{type_name}'", source, location)
-    raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.15 supports scalar, enumeration, and approved local aggregate types", source, location)
+    raise DiagnosticError("E0200", f"unknown type '{type_name}'; OCL 0.16 supports scalar, enumeration, and approved local aggregate types", source, location)
 
 
 def _static_integer(expression: Expression):
@@ -177,7 +177,7 @@ def _analyze(program: Program, source: str) -> None:
 
     constants = {}
     if len(program.constants) > 256:
-        raise DiagnosticError("E0238", "Prototype 0.15 allows at most 256 top-level constants", source, program.constants[256].location)
+        raise DiagnosticError("E0238", "Prototype 0.16 allows at most 256 top-level constants", source, program.constants[256].location)
     for constant in program.constants:
         if constant.name in constants:
             raise DiagnosticError("E0238", f"duplicate constant '{constant.name}'", source, constant.location)
@@ -220,7 +220,7 @@ def _analyze(program: Program, source: str) -> None:
         if array_bytes > MAX_LOCAL_ARRAY_BYTES:
             raise DiagnosticError(
                 "E0219",
-                f"function '{function.name}' declares {array_bytes} bytes of aggregates; Prototype 0.15 allows at most {MAX_LOCAL_ARRAY_BYTES}",
+                f"function '{function.name}' declares {array_bytes} bytes of aggregates; Prototype 0.16 allows at most {MAX_LOCAL_ARRAY_BYTES}",
                 source,
                 function.location,
             )
@@ -265,7 +265,7 @@ def _analyze_statements(statements, scope, declared, functions, function, source
         if isinstance(statement, (LetStatement, VarStatement)):
             _require_known_type(statement.type_name, source, statement.location, arrays=True, structures=structures, enumerations=enumerations)
             if statement.name in declared:
-                raise DiagnosticError("E0210", f"name '{statement.name}' is already declared in this function; OCL 0.15 has no shadowing", source, statement.location)
+                raise DiagnosticError("E0210", f"name '{statement.name}' is already declared in this function; OCL 0.16 has no shadowing", source, statement.location)
             if _array_type(statement.type_name) and not isinstance(statement.initializer, ArrayLiteral):
                 raise DiagnosticError("E0223", "array initializer must be an array literal in OCL 0.7", source, statement.initializer.location)
             if str(statement.type_name) in structures and not isinstance(statement.initializer, StructLiteral):

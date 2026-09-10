@@ -8,6 +8,7 @@ from .literals import literal_parts
 
 
 class TokenKind(Enum):
+    IMPORT = auto()
     FN = auto()
     IF = auto()
     ELSE = auto()
@@ -164,6 +165,7 @@ def lex(source: str) -> list[Token]:
                 end += 1
             word = source[index:end]
             kind = {
+                "import": TokenKind.IMPORT,
                 "break": TokenKind.BREAK,
                 "continue": TokenKind.CONTINUE,
                 "const": TokenKind.CONST,

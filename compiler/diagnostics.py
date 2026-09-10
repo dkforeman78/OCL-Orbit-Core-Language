@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class SourceDocument:
+    filename: str
+    text: str
 
 
 @dataclass(frozen=True)
@@ -8,6 +14,7 @@ class SourceLocation:
     offset: int
     line: int
     column: int
+    document: SourceDocument | None = field(default=None, repr=False, compare=False)
 
 
 class InternalCompilerError(Exception):
@@ -18,11 +25,13 @@ class DiagnosticError(Exception):
     def __init__(self, code: str, message: str, source: str, location: SourceLocation):
         self.code = code
         self.message = message
-        self.source = source
+        self.source = location.document.text if location.document else source
+        self.filename = location.document.filename if location.document else None
         self.location = location
         super().__init__(message)
 
     def render(self, filename: str) -> str:
+        filename = self.filename or filename
         text = self.source_line()
         prefix = text[:max(0, self.location.column - 1)].expandtabs(4)
         text = text.expandtabs(4)
@@ -43,7 +52,7 @@ class DiagnosticError(Exception):
 
     def as_dict(self, filename: str) -> dict:
         return diagnostic_record(
-            "source", self.message, code=self.code, filename=filename,
+            "source", self.message, code=self.code, filename=self.filename or filename,
             location={"offset": self.location.offset, "line": self.location.line,
                       "column": self.location.column}, source_line=self.source_line(),
         )
