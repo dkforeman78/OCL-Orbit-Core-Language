@@ -16,9 +16,15 @@ def _existing_identity(target: Path, known_paths) -> Path:
     POSIX Path.resolve preserves spelling on case-insensitive macOS volumes.
     Confirm filesystem identity, then distinguish two real directory entries
     from two spellings of one entry. Never case-fold paths unconditionally.
+
+    Compare spellings as strings, not as Path objects: WindowsPath equality and
+    hashing are case-insensitive, so `math.ocl` and `Math.ocl` in a Windows
+    case-sensitive directory would compare equal while naming different files.
+    Resolution already canonicalizes an alias to its on-disk spelling on an
+    ordinary Windows volume, so exact strings still coalesce real aliases there.
     """
     for known in known_paths:
-        if target == known:
+        if str(target) == str(known):
             return known
         if (target.parent == known.parent
                 and target.name.casefold() == known.name.casefold()
@@ -67,16 +73,17 @@ def load_program(entry: Path) -> tuple[Program, str]:
         raise ValueError(f'cannot resolve entry source: {error}') from None
     root = entry.parent
     first = _load(entry)
-    modules = {entry: first}
-    active = {entry}
+    # Identity is the exact resolved spelling; see _existing_identity.
+    modules = {str(entry): first}
+    active = {str(entry)}
     finished = set()
     # Each frame holds a module, its next edge, and its direct dependency set.
     stack = [(first, 0, set())]
     while stack:
         module, index, seen = stack[-1]
         if index == len(module.imports):
-            active.remove(module.path)
-            finished.add(module.path)
+            active.remove(str(module.path))
+            finished.add(str(module.path))
             stack.pop()
             continue
         reference = module.imports[index]
@@ -84,18 +91,19 @@ def load_program(entry: Path) -> tuple[Program, str]:
         attempted = root / (reference.lexeme + '.ocl')
         try:
             target = attempted.resolve()
-            target = _existing_identity(target, modules)
+            target = _existing_identity(target, [loaded.path for loaded in modules.values()])
         except (OSError, RuntimeError) as error:
             raise DiagnosticError('E0301', f"cannot resolve module '{attempted}': {error}", module.source, reference.location) from None
         if target.parent != root:
             raise DiagnosticError('E0305', f"module '{attempted}' resolves outside entry directory", module.source, reference.location)
-        if target in seen:
+        key = str(target)
+        if key in seen:
             raise DiagnosticError('E0302', f"duplicate import '{reference.lexeme}'", module.source, reference.location)
-        seen.add(target)
-        if target in active:
+        seen.add(key)
+        if key in active:
             chain = ' -> '.join([frame[0].path.name for frame in stack] + [target.name])
             raise DiagnosticError('E0303', f'import cycle: {chain}', module.source, reference.location)
-        if target in finished:
+        if key in finished:
             continue
         if len(modules) >= MAX_MODULES:
             raise DiagnosticError('E0304', f'compilation may contain at most {MAX_MODULES} source files', module.source, reference.location)
@@ -103,8 +111,8 @@ def load_program(entry: Path) -> tuple[Program, str]:
             child = _load(target)
         except (OSError, UnicodeError) as error:
             raise DiagnosticError('E0301', f"cannot read module '{attempted}': {error}", module.source, reference.location) from None
-        modules[target] = child
-        active.add(target)
+        modules[key] = child
+        active.add(key)
         stack.append((child, 0, set()))
 
     enum_names = {module.tokens[i+1].lexeme for module in modules.values()
@@ -113,7 +121,7 @@ def load_program(entry: Path) -> tuple[Program, str]:
     programs = []
     for module in modules.values():
         program = parse(module.tokens, module.source, enum_names=enum_names)
-        if module.path != entry:
+        if str(module.path) != str(entry):
             for function in program.functions:
                 if function.name == 'main':
                     raise DiagnosticError('E0306', 'only the entry source may define main', module.source, function.location)

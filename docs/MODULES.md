@@ -14,9 +14,9 @@ Resolution is iterative and deterministic, in source import order. Diamonds load
 each canonical path once. Duplicate direct imports and cycles are diagnostics.
 Up to 256 unique resolved files, including the entry file, are allowed. Symlinks
 escaping the resolved entry directory are rejected; this is a resolver policy, not
-a filesystem sandbox. Hard links are distinct paths. Case-sensitive hosts retain
-case-sensitive path identity. Each file is read as UTF-8 with BOM removal and newline
-normalization. Unreachable files are not read.
+a filesystem sandbox. Hard links are distinct paths. Case-sensitive hosts and
+case-sensitive directories retain case-sensitive path identity. Each file is read
+as UTF-8 with BOM removal and newline normalization. Unreachable files are not read.
 
 `compile_file(path)` returns a combined Program and LLVM IR. `compile_source(text)`
 does not access the filesystem and rejects imports with E0300. CLI check, emit-ir,
