@@ -228,6 +228,39 @@ class ModuleTests(unittest.TestCase):
             self.assertEqual(len(program.functions), 2)
         else:
             self.diagnostic('E0301')
+            self.write('Math.ocl', 'fn other() -> i32 {return 0;}')
+            program, _ = compile_file(self.root / 'main.ocl')
+            self.assertEqual(len(program.functions), 3)
+
+    def test_case_alias_identity_without_host_case_assumptions(self):
+        # Model POSIX path inequality on a case-insensitive volume, even when
+        # this test runs on Windows or a case-sensitive Linux filesystem.
+        parent = mock.Mock(spec=Path)
+        known, target = mock.Mock(spec=Path), mock.Mock(spec=Path)
+        known.name, target.name = 'math.ocl', 'Math.ocl'
+        known.parent = target.parent = parent
+        target.exists.return_value = True
+        target.samefile.return_value = True
+        parent.iterdir.return_value = [known]
+        self.assertIs(modules._existing_identity(target, [known]), known)
+        target.samefile.assert_called_once_with(known)
+        parent.iterdir.return_value = [known, target]
+        self.assertIs(modules._existing_identity(target, [known]), target)
+        target.samefile.return_value = False
+        self.assertIs(modules._existing_identity(target, [known]), target)
+
+    def test_case_distinct_hard_links_remain_distinct_module_paths(self):
+        original = self.write('math.ocl', 'fn f() -> i32 {return 42;}')
+        if (self.root / 'Math.ocl').exists():
+            self.skipTest('case-distinct directory entries require a case-sensitive volume')
+        try:
+            os.link(original, self.root / 'Math.ocl')
+        except OSError as error:
+            self.skipTest(f'hard links unavailable: {error}')
+        self.write('main.ocl', 'import math; import Math; fn main() -> i32 {return f();}')
+        # Two distinct module paths containing the same declaration, not a
+        # duplicate import of one path, even though their inode is identical.
+        self.diagnostic('E0201')
 
     def test_symlink_outside_root_is_rejected(self):
         self.write('main.ocl', 'import alias; fn main() -> i32 {return 42;}')

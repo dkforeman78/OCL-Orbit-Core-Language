@@ -2,6 +2,7 @@
 
 ## 0.16.0 - Unreleased
 
+- Fixed case-alias module identity on case-insensitive macOS volumes, while retaining distinct case-sensitive files and hard-link directory entries.
 - Bounded the cycle-diagnostic regression in a subprocess so removing cycle detection fails cleanly rather than hanging the suite.
 - Added root-relative `import name;` with iterative resolution, cycle and duplicate detection, and a 256-file limit.
 - Added cross-file functions, constants, enums and structures in one provisional flat compilation unit.

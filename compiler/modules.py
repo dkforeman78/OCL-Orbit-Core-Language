@@ -10,6 +10,25 @@ from .parser import parse
 MAX_MODULES = 256
 
 
+def _existing_identity(target: Path, known_paths) -> Path:
+    """Coalesce case aliases without coalescing distinct hard-link entries.
+
+    POSIX Path.resolve preserves spelling on case-insensitive macOS volumes.
+    Confirm filesystem identity, then distinguish two real directory entries
+    from two spellings of one entry. Never case-fold paths unconditionally.
+    """
+    for known in known_paths:
+        if target == known:
+            return known
+        if (target.parent == known.parent
+                and target.name.casefold() == known.name.casefold()
+                and target.exists() and target.samefile(known)):
+            names = {child.name for child in target.parent.iterdir()}
+            if not (target.name in names and known.name in names):
+                return known
+    return target
+
+
 @dataclass
 class Module:
     path: Path
@@ -65,6 +84,7 @@ def load_program(entry: Path) -> tuple[Program, str]:
         attempted = root / (reference.lexeme + '.ocl')
         try:
             target = attempted.resolve()
+            target = _existing_identity(target, modules)
         except (OSError, RuntimeError) as error:
             raise DiagnosticError('E0301', f"cannot resolve module '{attempted}': {error}", module.source, reference.location) from None
         if target.parent != root:
