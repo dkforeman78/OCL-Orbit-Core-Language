@@ -29,7 +29,9 @@ UTF-8 byte offsets, UTF-16 LSP positions, or terminal display-cell coordinates.
 CLI source loading removes a UTF-8 BOM and normalizes newlines to LF before
 compilation; positions refer to that normalized source. Direct API callers receive
 positions in their supplied source string. Only LF advances the lexer's line count.
-Text output expands tabs to four-column stops for caret placement; Unicode terminal
+Text output expands tabs to four-column stops for caret placement and is written
+as UTF-8 so a character the host locale cannot encode is not replaced by a wider
+escape that would move the reported line out from under the caret; Unicode terminal
 cell widths are not normalized. JSON retains unexpanded source text.
 
 Successful check/build status and emitted LLVM IR remain on stdout unchanged;
