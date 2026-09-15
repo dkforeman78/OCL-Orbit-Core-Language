@@ -82,8 +82,21 @@ class ModuleTests(unittest.TestCase):
         self.write('main.ocl', 'import a; fn main() -> i32 {return 42;}')
         self.write('a.ocl', 'import b;')
         self.write('b.ocl', 'import a;')
-        error = self.diagnostic('E0303', 'b.ocl')
-        self.assertIn('main.ocl -> a.ocl -> b.ocl -> a.ocl', error.message)
+        # A removed cycle guard otherwise loops forever: the file bound counts
+        # unique files, not traversal steps. Isolate and reap the child on timeout.
+        try:
+            result = subprocess.run(
+                [sys.executable, str(ROOT / 'oclc.py'), 'check',
+                 str(self.root / 'main.ocl'), '--diagnostic-format=json'],
+                cwd=ROOT, capture_output=True, encoding='utf-8', timeout=10)
+        except subprocess.TimeoutExpired:
+            self.fail('cycle detection failed to terminate within 10 seconds')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, '')
+        error = json.loads(result.stderr)
+        self.assertEqual(error['code'], 'E0303')
+        self.assertEqual(error['file'], str((self.root / 'b.ocl').resolve()))
+        self.assertIn('main.ocl -> a.ocl -> b.ocl -> a.ocl', error['message'])
 
     def test_module_count_boundary_and_long_chain(self):
         self.write('main.ocl', 'import m1; fn main() -> i32 {return 42;}')
