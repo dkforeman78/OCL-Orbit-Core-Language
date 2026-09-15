@@ -8,6 +8,7 @@
 
 ### Fixed after independent review
 
+- Forced a non-UTF-8 subprocess encoding in the Unicode diagnostic regression so UTF-8-default hosts also exercise the output-encoding fix.
 - Text diagnostics are written as UTF-8. stderr defaults to the host locale with backslashreplace, so a character the locale cannot encode became a wider escape — one astral code point became ten ASCII ones — and the caret computed from code-point columns landed mid-escape instead of under the offending character.
 - Covered five contract points no test pinned: usage diagnostics carry a null file, an external tool failure is a `toolchain` rather than a `source` diagnostic, abbreviated long options are rejected, a format value other than `json` or `text` is a text usage error rather than JSON, and a carriage return never reaches the reported source line through the direct API.
 

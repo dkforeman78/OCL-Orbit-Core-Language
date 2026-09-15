@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -193,7 +194,9 @@ class JsonDiagnosticsTests(unittest.TestCase):
                 path.write_text(text, encoding='utf-8')
                 result = subprocess.run(
                     [sys.executable, str(Path(__file__).parents[1] / 'oclc.py'), 'check', str(path)],
-                    capture_output=True, timeout=60)
+                    capture_output=True, timeout=60,
+                    env={**os.environ, 'PYTHONIOENCODING': 'cp1252:backslashreplace'})
+                self.assertEqual(result.returncode, 1)
                 rendered = result.stderr.decode('utf-8')
                 body, caret = rendered.splitlines()[-2:]
                 body = body.split('|', 1)[1][1:]
