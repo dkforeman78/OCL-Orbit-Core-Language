@@ -2,6 +2,7 @@
 
 ## 0.16.0 - Unreleased
 
+- Centralized exact resolved-path identity for files and directories; rejected imports escaping into case-distinct sibling directories on Windows, with host-independent and real-filesystem regressions.
 - Fixed case-alias module identity on case-insensitive macOS volumes, while retaining distinct case-sensitive files and hard-link directory entries.
 - Bounded the cycle-diagnostic regression in a subprocess so removing cycle detection fails cleanly rather than hanging the suite.
 - Added root-relative `import name;` with iterative resolution, cycle and duplicate detection, and a 256-file limit.

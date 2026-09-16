@@ -17,6 +17,8 @@ escaping the resolved entry directory are rejected; this is a resolver policy, n
 a filesystem sandbox. Hard links are distinct paths. Case-sensitive hosts and
 case-sensitive directories retain case-sensitive path identity. Each file is read
 as UTF-8 with BOM removal and newline normalization. Unreachable files are not read.
+File identity and directory containment use the same exact resolved-path key;
+case-distinct sibling directories are not interchangeable, even on Windows.
 
 `compile_file(path)` returns a combined Program and LLVM IR. `compile_source(text)`
 does not access the filesystem and rejects imports with E0300. CLI check, emit-ir,

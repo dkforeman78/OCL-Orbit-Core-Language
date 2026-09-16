@@ -418,6 +418,55 @@ class ModuleTests(unittest.TestCase):
             with mock.patch.object(Path, 'resolve', redirect):
                 self.diagnostic('E0305', 'b.ocl')
 
+    def test_case_distinct_parent_directories_cannot_alias(self):
+        known, target = mock.MagicMock(spec=Path), mock.MagicMock(spec=Path)
+        known.__str__.return_value = 'C:/pkg/math.ocl'
+        target.__str__.return_value = 'C:/Pkg/Math.ocl'
+        known.name, target.name = 'math.ocl', 'Math.ocl'
+        known.parent.__str__.return_value = 'C:/pkg'
+        target.parent.__str__.return_value = 'C:/Pkg'
+        target.parent.__eq__.return_value = True
+        target.exists.return_value = target.samefile.return_value = True
+        target.parent.iterdir.return_value = [target]
+        self.assertIs(modules._existing_identity(target, [known]), target)
+
+    def test_containment_ignores_case_insensitive_path_equality(self):
+        self.write('main.ocl', 'import escape; fn main() -> i32 {return 42;}')
+        escaped = mock.MagicMock(spec=Path)
+        escaped.__str__.return_value = 'outside/escape.ocl'
+        escaped.name = 'escape.ocl'
+        escaped.parent.__str__.return_value = 'outside'
+        escaped.parent.__ne__.return_value = False
+        real_resolve, real_load = Path.resolve, modules._load
+
+        def redirect(path, *args, **kwargs):
+            return escaped if path.name == 'escape.ocl' else real_resolve(path, *args, **kwargs)
+
+        def load(path):
+            self.assertIsNot(path, escaped, 'outside dependency must be rejected before reading')
+            return real_load(path)
+
+        with mock.patch.object(Path, 'resolve', redirect), mock.patch.object(modules, '_load', load):
+            self.diagnostic('E0305', 'main.ocl')
+
+    def test_escape_into_a_case_distinct_sibling_directory_is_rejected(self):
+        base = self.case_sensitive_directory()
+        inside, outside = base / 'pkg', base / 'Pkg'
+        inside.mkdir()
+        outside.mkdir()
+        self.assertFalse(inside.samefile(outside))
+        entry = inside / 'main.ocl'
+        entry.write_text('import escape; fn main() -> i32 {return external();}', encoding='utf-8')
+        escaped = outside / 'escape.ocl'
+        escaped.write_text('fn external() -> i32 {return 42;}', encoding='utf-8')
+        real_resolve = Path.resolve
+
+        def redirect(path, *args, **kwargs):
+            return real_resolve(escaped) if path.name == 'escape.ocl' else real_resolve(path, *args, **kwargs)
+
+        with mock.patch.object(Path, 'resolve', redirect):
+            self.compile_in(inside, 'E0305', 'main.ocl')
+
     def test_symlink_outside_root_is_rejected(self):
         self.write('main.ocl', 'import alias; fn main() -> i32 {return 42;}')
         with tempfile.TemporaryDirectory() as directory:

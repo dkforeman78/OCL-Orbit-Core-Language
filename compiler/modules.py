@@ -10,6 +10,11 @@ from .parser import parse
 MAX_MODULES = 256
 
 
+def _path_key(path: Path) -> str:
+    """Identity of an already-resolved path, preserving case-sensitive entries."""
+    return str(path)
+
+
 def _existing_identity(target: Path, known_paths) -> Path:
     """Coalesce case aliases without coalescing distinct hard-link entries.
 
@@ -24,9 +29,9 @@ def _existing_identity(target: Path, known_paths) -> Path:
     ordinary Windows volume, so exact strings still coalesce real aliases there.
     """
     for known in known_paths:
-        if str(target) == str(known):
+        if _path_key(target) == _path_key(known):
             return known
-        if (target.parent == known.parent
+        if (_path_key(target.parent) == _path_key(known.parent)
                 and target.name.casefold() == known.name.casefold()
                 and target.exists() and target.samefile(known)):
             names = {child.name for child in target.parent.iterdir()}
@@ -74,16 +79,16 @@ def load_program(entry: Path) -> tuple[Program, str]:
     root = entry.parent
     first = _load(entry)
     # Identity is the exact resolved spelling; see _existing_identity.
-    modules = {str(entry): first}
-    active = {str(entry)}
+    modules = {_path_key(entry): first}
+    active = {_path_key(entry)}
     finished = set()
     # Each frame holds a module, its next edge, and its direct dependency set.
     stack = [(first, 0, set())]
     while stack:
         module, index, seen = stack[-1]
         if index == len(module.imports):
-            active.remove(str(module.path))
-            finished.add(str(module.path))
+            active.remove(_path_key(module.path))
+            finished.add(_path_key(module.path))
             stack.pop()
             continue
         reference = module.imports[index]
@@ -94,9 +99,9 @@ def load_program(entry: Path) -> tuple[Program, str]:
             target = _existing_identity(target, [loaded.path for loaded in modules.values()])
         except (OSError, RuntimeError) as error:
             raise DiagnosticError('E0301', f"cannot resolve module '{attempted}': {error}", module.source, reference.location) from None
-        if target.parent != root:
+        if _path_key(target.parent) != _path_key(root):
             raise DiagnosticError('E0305', f"module '{attempted}' resolves outside entry directory", module.source, reference.location)
-        key = str(target)
+        key = _path_key(target)
         if key in seen:
             raise DiagnosticError('E0302', f"duplicate import '{reference.lexeme}'", module.source, reference.location)
         seen.add(key)
@@ -121,7 +126,7 @@ def load_program(entry: Path) -> tuple[Program, str]:
     programs = []
     for module in modules.values():
         program = parse(module.tokens, module.source, enum_names=enum_names)
-        if str(module.path) != str(entry):
+        if _path_key(module.path) != _path_key(entry):
             for function in program.functions:
                 if function.name == 'main':
                     raise DiagnosticError('E0306', 'only the entry source may define main', module.source, function.location)
