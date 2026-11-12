@@ -1,3 +1,7 @@
+<img width="1600" height="500" alt="image" src="https://github.com/user-attachments/assets/bd0132fb-337b-4eef-b9ed-34187e3c50e5" />
+
+
+
 # OCL — Orbit Core Language
 
 OCL Compiler Prototype 0.16 adds modules and imports with file-specific diagnostics.
