@@ -158,7 +158,7 @@ class Parser:
         self.block_depth += 1
         if self.block_depth > MAX_BLOCK_DEPTH:
             self.block_depth -= 1
-            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.14 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
+            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.15 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
         try:
             statements: list[Statement] = []
             while not self._at(TokenKind.RIGHT_BRACE) and not self._at(TokenKind.EOF):
@@ -254,7 +254,7 @@ class Parser:
         if self.depth > MAX_EXPRESSION_DEPTH:
             raise DiagnosticError(
                 "E0101",
-                f"expression is nested too deeply; OCL 0.14 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                f"expression is nested too deeply; OCL 0.15 allows at most {MAX_EXPRESSION_DEPTH} levels",
                 self.source,
                 self.tokens[self.current].location,
             )
@@ -342,7 +342,7 @@ class Parser:
                 self.depth -= 1
                 raise DiagnosticError(
                     "E0101",
-                    f"expression is nested too deeply; OCL 0.14 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                    f"expression is nested too deeply; OCL 0.15 allows at most {MAX_EXPRESSION_DEPTH} levels",
                     self.source,
                     operator.location,
                 )
