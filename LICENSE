@@ -1,3 +1,44 @@
-Copyright (c) 2026 L2 Productions. All rights reserved.
+# Orbit Compiler Language (OCL)
+## Proprietary Software License Notice
 
-No license for redistribution or use is granted by this file.
+**Copyright © 2026 L2P LLC d/b/a Orbit Systems. All rights reserved.**
+
+Orbit Compiler Language (OCL), including its compiler, source code, documentation, associated tools, and original software components, is proprietary intellectual property of L2P LLC, doing business as Orbit Systems.
+
+### 1. Ownership
+All rights, title, and interest in the original OCL software and associated intellectual property are reserved by L2P LLC, subject to applicable law and third-party rights.
+
+### 2. Restrictions
+Unless expressly authorized in writing by L2P LLC, no permission is granted to:
+
+- Copy or redistribute the software.
+- Modify or create derivative works.
+- Sublicense, sell, or commercially distribute the software.
+- Incorporate proprietary OCL components into other products.
+
+These restrictions apply subject to applicable law and any separately granted rights.
+
+### 3. Authorized Use
+Access to this repository does not constitute a license to use, modify, or distribute its contents.
+
+Any authorized use of OCL must comply with a separate written license agreement issued by L2P LLC.
+
+### 4. Third-Party Components
+Third-party libraries, frameworks, dependencies, and other components retain their respective copyright notices and license terms.
+
+Nothing in this notice supersedes rights granted under applicable third-party licenses.
+
+### 5. Warranty Disclaimer
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE SOFTWARE IS PROVIDED "AS IS," WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+### 6. Reservation of Rights
+All rights not expressly granted are reserved by L2P LLC.
+
+---
+
+**Orbit Systems**  
+*A business of L2P LLC*  
+Orbit Compiler Language (OCL)  
+© 2026 L2P LLC. All rights reserved.
+
+**Official Website:** https://www.orbit2os.com
