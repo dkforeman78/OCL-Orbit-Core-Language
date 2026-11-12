@@ -1,6 +1,7 @@
 # Changelog
 
-## 0.16.0 - Unreleased
+<<<<<<< HEAD
+## 0.16.0 - 2026-11-11
 
 - Centralized exact resolved-path identity for files and directories; rejected imports escaping into case-distinct sibling directories on Windows, with host-independent and real-filesystem regressions.
 - Fixed case-alias module identity on case-insensitive macOS volumes, while retaining distinct case-sensitive files and hard-link directory entries.
@@ -20,6 +21,9 @@
 - Pinned that case aliases coalesce only within one directory. A resolution escaping to an outside hard link of an inside module has the same inode and a case-variant name; dropping the same-directory requirement merged it with the inside module, so an escape imported through another module compiled silently instead of failing with E0305.
 
 ## 0.15.0 - Unreleased
+=======
+## 0.15.0 - 2026-11-11
+>>>>>>> origin/main
 
 - Added versioned JSON diagnostics on stderr for source, usage, I/O, toolchain, and detected internal compiler errors.
 - Fixed caret alignment after tabs and source-line selection with Unicode separators inside comments.
