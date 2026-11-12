@@ -76,7 +76,7 @@ _RECURSION_LIMIT_LOCK = RECURSION_LIMIT_LOCK
 
 
 class Parser:
-    def __init__(self, tokens: list[Token], source: str):
+    def __init__(self, tokens: list[Token], source: str, enum_names=None):
         self.tokens = tokens
         self.source = source
         self.current = 0
@@ -87,6 +87,8 @@ class Parser:
             for index, token in enumerate(tokens[:-1])
             if token.kind is TokenKind.ENUM and tokens[index + 1].kind is TokenKind.IDENTIFIER
         }
+        if enum_names is not None:
+            self.enum_names.update(enum_names)
 
     def parse(self) -> Program:
         functions: list[Function] = []
@@ -158,7 +160,7 @@ class Parser:
         self.block_depth += 1
         if self.block_depth > MAX_BLOCK_DEPTH:
             self.block_depth -= 1
-            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.15 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
+            raise DiagnosticError("E0102", f"block is nested too deeply; OCL 0.16 allows at most {MAX_BLOCK_DEPTH} levels", self.source, start.location)
         try:
             statements: list[Statement] = []
             while not self._at(TokenKind.RIGHT_BRACE) and not self._at(TokenKind.EOF):
@@ -254,7 +256,7 @@ class Parser:
         if self.depth > MAX_EXPRESSION_DEPTH:
             raise DiagnosticError(
                 "E0101",
-                f"expression is nested too deeply; OCL 0.15 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                f"expression is nested too deeply; OCL 0.16 allows at most {MAX_EXPRESSION_DEPTH} levels",
                 self.source,
                 self.tokens[self.current].location,
             )
@@ -342,7 +344,7 @@ class Parser:
                 self.depth -= 1
                 raise DiagnosticError(
                     "E0101",
-                    f"expression is nested too deeply; OCL 0.15 allows at most {MAX_EXPRESSION_DEPTH} levels",
+                    f"expression is nested too deeply; OCL 0.16 allows at most {MAX_EXPRESSION_DEPTH} levels",
                     self.source,
                     operator.location,
                 )
@@ -504,7 +506,7 @@ class Parser:
         return True
 
 
-def parse(tokens: list[Token], source: str) -> Program:
+def parse(tokens: list[Token], source: str, *, enum_names=None) -> Program:
     """Parse a token stream, guaranteeing E0101 rather than a RecursionError.
 
     The depth guard is expressed in parser levels, but it is enforced by Python
@@ -514,4 +516,4 @@ def parse(tokens: list[Token], source: str) -> Program:
     documented limit deterministic instead of dependent on the call site.
     """
     with reserved(MAX_EXPRESSION_DEPTH * FRAMES_PER_LEVEL):
-        return Parser(tokens, source).parse()
+        return Parser(tokens, source, enum_names).parse()

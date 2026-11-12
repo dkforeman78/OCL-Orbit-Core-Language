@@ -1,5 +1,9 @@
 # Diagnostic output — Prototype 0.15
 
+For 0.16 modules, entry paths retain caller spelling and dependency paths are
+resolved absolute paths. Locations and snippets refer to the owning file, not
+a concatenation of the compilation unit. See [modules](MODULES.md).
+
 Use `oclc check source.ocl --diagnostic-format=json` (also supported by `build`
 and `emit-ir`). Text remains the default. Use full long-option spellings; ambiguous
 or abbreviated options are rejected. A valid format option before `--` selects

@@ -2,6 +2,13 @@
 
 `oclc` uses a deliberately small pipeline with separate modules:
 
+Prototype 0.16's file resolver discovers a bounded import graph with an explicit
+stack. Each file is lexed once and parsed separately, with cross-file enum names
+discovered before parsing. Programs are combined for semantic analysis and LLVM
+lowering. Every token location can retain a shared immutable SourceDocument;
+diagnostics use that document instead of the entry source for dependency errors.
+The source-string API remains independent of filesystem lookup.
+
 Prototype 0.14 selects explicit Clang `-O0` for default native builds and `-O2`
 for `build --release`. Frontend validation and LLVM generation are identical in
 both modes. No fast-math, overflow flags, LTO, or CPU-specific tuning is added.

@@ -1,0 +1,487 @@
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from compiler.diagnostics import DiagnosticError
+from compiler.driver import compile_file, compile_source
+from compiler import modules
+from native_support import ROOT, require_clang, run_executable
+
+
+class ModuleTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='ocl modules ')
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def write(self, name, source):
+        path = self.root / name
+        path.write_text(source, encoding='utf-8')
+        return path
+
+    def diagnostic(self, code, filename=None):
+        with self.assertRaises(DiagnosticError) as caught:
+            compile_file(self.root / 'main.ocl')
+        self.assertEqual(caught.exception.code, code)
+        if filename:
+            expected = self.root / filename
+            self.assertEqual(caught.exception.filename, str(expected if filename == 'main.ocl' else expected.resolve()))
+        return caught.exception
+
+    def test_cross_file_functions_constants_enums_and_structures(self):
+        self.write('main.ocl', 'import math; fn main() -> i32 { let p: Point = Point {x: N}; return choose(E.Yes, p.x); }')
+        self.write('math.ocl', 'import types; const N: i32 = 42; fn choose(e: E, x: i32) -> i32 { return match e {E.Yes => x, E.No => 0}; }')
+        self.write('types.ocl', 'enum E {Yes, No} struct Point {x: i32}')
+        program, ir = compile_file(self.root / 'main.ocl')
+        self.assertEqual(len(program.functions), 2)
+        self.assertIn('define i32 @choose', ir)
+        self.run_both(self.root / 'main.ocl')
+
+    def run_both(self, source):
+        require_clang()
+        for release in (False, True):
+            output = self.root / ('output.exe' if os.name == 'nt' else 'output')
+            command = [sys.executable, str(ROOT / 'oclc.py'), 'build', str(source), '-o', str(output)]
+            if release:
+                command.append('--release')
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(run_executable(output), 42)
+
+    def test_diamond_loads_each_file_once_and_ignores_unreachable_files(self):
+        self.write('main.ocl', 'import a; import b; fn main() -> i32 {return n();}')
+        self.write('a.ocl', 'import shared;')
+        self.write('b.ocl', 'import shared;')
+        self.write('shared.ocl', 'fn n() -> i32 {return 42;}')
+        self.write('unused.ocl', '@ invalid')
+        with mock.patch.object(modules, '_load', wraps=modules._load) as load:
+            program, first = compile_file(self.root / 'main.ocl')
+        self.assertEqual(load.call_count, 4)
+        self.assertEqual(len(program.functions), 2)
+        self.assertEqual(first, compile_file(self.root / 'main.ocl')[1])
+
+    def test_import_errors(self):
+        cases = [('import missing; fn main() -> i32 {return 42;}', 'E0301'),
+                 ('import a; import a; fn main() -> i32 {return 42;}', 'E0302'),
+                 ('fn main() -> i32 {return 42;} import a;', 'E0300'),
+                 ('import a.b; fn main() -> i32 {return 42;}', 'E0300'),
+                 ('import a', 'E0300'),
+                 ('fn main() -> i32 {import a; return 42;}', 'E0300')]
+        self.write('a.ocl', '')
+        for source, code in cases:
+            with self.subTest(source=source):
+                self.write('main.ocl', source)
+                self.diagnostic(code, 'main.ocl')
+
+    def test_cycle_diagnostic_names_chain_and_importing_file(self):
+        self.write('main.ocl', 'import a; fn main() -> i32 {return 42;}')
+        self.write('a.ocl', 'import b;')
+        self.write('b.ocl', 'import a;')
+        # A removed cycle guard otherwise loops forever: the file bound counts
+        # unique files, not traversal steps. Isolate and reap the child on timeout.
+        try:
+            result = subprocess.run(
+                [sys.executable, str(ROOT / 'oclc.py'), 'check',
+                 str(self.root / 'main.ocl'), '--diagnostic-format=json'],
+                cwd=ROOT, capture_output=True, encoding='utf-8', timeout=10)
+        except subprocess.TimeoutExpired:
+            self.fail('cycle detection failed to terminate within 10 seconds')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, '')
+        error = json.loads(result.stderr)
+        self.assertEqual(error['code'], 'E0303')
+        self.assertEqual(error['file'], str((self.root / 'b.ocl').resolve()))
+        self.assertIn('main.ocl -> a.ocl -> b.ocl -> a.ocl', error['message'])
+
+    def test_module_count_boundary_and_long_chain(self):
+        self.write('main.ocl', 'import m1; fn main() -> i32 {return 42;}')
+        for index in range(1, 256):
+            self.write(f'm{index}.ocl', f'import m{index+1};' if index < 255 else '')
+        compile_file(self.root / 'main.ocl')
+        self.write('m255.ocl', 'import m256;')
+        self.write('m256.ocl', '')
+        self.diagnostic('E0304', 'm255.ocl')
+
+    def test_duplicate_declarations_and_imported_main(self):
+        self.write('main.ocl', 'import a; fn main() -> i32 {return 42;} fn f() -> i32 {return 1;}')
+        self.write('a.ocl', 'fn f() -> i32 {return 2;}')
+        self.diagnostic('E0201', 'a.ocl')
+        self.write('a.ocl', 'fn main() -> i32 {return 42;}')
+        self.diagnostic('E0306', 'a.ocl')
+
+    def test_files_cannot_share_partial_declarations(self):
+        self.write('main.ocl', 'import a; fn main() -> i32 {')
+        self.write('a.ocl', 'return 42; }')
+        self.diagnostic('E0100', 'main.ocl')
+
+    def test_missing_entry_main_is_reported_in_entry_source(self):
+        self.write('main.ocl', 'import a;')
+        self.write('a.ocl', 'fn f() -> i32 {return 42;}')
+        self.diagnostic('E0204', 'main.ocl')
+
+    def test_type_and_constant_collisions_remain_errors(self):
+        for declaration, code in [('enum E {A}', 'E0232'), ('struct S {x: i32}', 'E0225'),
+                                  ('const N: i32 = 1;', 'E0238')]:
+            with self.subTest(declaration=declaration):
+                self.write('main.ocl', f'import a; {declaration} fn main() -> i32 {{return 42;}}')
+                self.write('a.ocl', declaration)
+                self.diagnostic(code, 'a.ocl')
+
+    def test_nominal_enum_types_across_modules_do_not_convert(self):
+        self.write('main.ocl', 'import a; fn main() -> i32 {let x: A = B.One; return 42;}')
+        self.write('a.ocl', 'enum A {One} enum B {One}')
+        self.diagnostic('E0214', 'main.ocl')
+
+    def test_dependency_diagnostics_have_local_source_coordinates(self):
+        self.write('main.ocl', 'import a; fn main() -> i32 {return f();}')
+        for body, code in [('return @;', 'E0001'), ('return ;', 'E0100'), ('return false;', 'E0214')]:
+            source = '// é\u2028comment\nfn f() -> i32 { ' + body + ' }'
+            self.write('a.ocl', source)
+            error = self.diagnostic(code, 'a.ocl')
+            data = error.as_dict('incorrect.ocl')
+            self.assertEqual(data['location']['line'], 2)
+            self.assertEqual(data['source_line'], source.split('\n')[1])
+            self.assertIn(str((self.root / 'a.ocl').resolve()), error.render('incorrect.ocl'))
+
+    def test_json_cli_dependency_failure_preserves_output(self):
+        source = self.write('main.ocl', 'import a; fn main() -> i32 {return 42;}')
+        (self.root / 'a.ocl').write_bytes(b'\xef\xbb\xbf// comment\r\n@')
+        output = self.write('keep.ll', 'keep me')
+        result = subprocess.run([sys.executable, str(ROOT / 'oclc.py'), 'emit-ir', str(source), '-o', str(output), '--diagnostic-format=json'],
+                                cwd=ROOT, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, '')
+        data = json.loads(result.stderr)
+        self.assertEqual(data['file'], str((self.root / 'a.ocl').resolve()))
+        self.assertEqual(data['location'], {'line': 2, 'column': 1, 'offset': 11})
+        self.assertEqual(output.read_text(), 'keep me')
+
+    def test_invalid_dependency_encoding_identifies_import_site(self):
+        self.write('main.ocl', 'import a; fn main() -> i32 {return 42;}')
+        (self.root / 'a.ocl').write_bytes(b'\xff')
+        error = self.diagnostic('E0301', 'main.ocl')
+        self.assertIn('a.ocl', error.message)
+
+    def test_source_api_never_loads_imports(self):
+        with mock.patch.object(Path, 'read_text') as read:
+            with self.assertRaises(DiagnosticError) as caught:
+                compile_source('import a; fn main() -> i32 {return 42;}')
+        self.assertEqual(caught.exception.code, 'E0300')
+        read.assert_not_called()
+
+    def test_a_module_resolving_outside_the_entry_directory_is_rejected(self):
+        # The symlink test above is the only other cover for this check and it
+        # skips wherever the host denies symlink creation, so on those hosts the
+        # containment rule can be deleted without a single test noticing.
+        # Redirecting resolution keeps the invariant pinned on every host.
+        self.write('main.ocl', 'import a; fn main() -> i32 {return 42;}')
+        self.write('a.ocl', '')
+        with tempfile.TemporaryDirectory(prefix='ocl outside ') as outside:
+            escaped = Path(outside) / 'a.ocl'
+            escaped.write_text('', encoding='utf-8')
+            real_resolve = Path.resolve
+
+            def redirect(self, *args, **kwargs):
+                resolved = real_resolve(self, *args, **kwargs)
+                return real_resolve(escaped) if resolved.name == 'a.ocl' else resolved
+
+            with mock.patch.object(Path, 'resolve', redirect):
+                error = self.diagnostic('E0305')
+            self.assertIn('outside entry directory', error.message)
+
+    def test_a_diamond_is_admitted_at_the_file_bound(self):
+        # The bound counts unique files, so revisiting an already-compiled
+        # module must not consume budget. A pure chain never revisits anything,
+        # so only a diamond reaching the limit exercises the ordering between
+        # the already-finished short circuit and the limit check.
+        padding = 252
+        imports = ''.join(f'import p{index}; ' for index in range(padding))
+        # entry + padding + a + b + shared == 256 unique files
+        self.write('main.ocl', imports + 'import a; import b; fn main() -> i32 {return n();}')
+        for index in range(padding):
+            self.write(f'p{index}.ocl', '')
+        self.write('a.ocl', 'import shared;')
+        self.write('b.ocl', 'import shared;')
+        self.write('shared.ocl', 'fn n() -> i32 {return 42;}')
+        program, _ = compile_file(self.root / 'main.ocl')
+        self.assertEqual(len(program.functions), 2)
+        self.write('over.ocl', '')
+        self.write('main.ocl', imports + 'import a; import b; import over; fn main() -> i32 {return n();}')
+        self.diagnostic('E0304')
+
+    def test_a_module_name_differing_only_in_case_is_one_file(self):
+        # On a case-insensitive host both spellings name the same file, so the
+        # second import is a duplicate rather than a second copy of the
+        # declarations. On a case-sensitive host they are separate files.
+        self.write('math.ocl', 'fn add(a: i32, b: i32) -> i32 {return a + b;}')
+        self.write('main.ocl', 'import math; import Math; fn main() -> i32 {return add(20, 22);}')
+        insensitive = (self.root / 'MATH.ocl').exists()
+        if insensitive:
+            self.diagnostic('E0302')
+            self.write('main.ocl', 'import Math; fn main() -> i32 {return add(20, 22);}')
+            program, _ = compile_file(self.root / 'main.ocl')
+            self.assertEqual(len(program.functions), 2)
+        else:
+            self.diagnostic('E0301')
+            self.write('Math.ocl', 'fn other() -> i32 {return 0;}')
+            program, _ = compile_file(self.root / 'main.ocl')
+            self.assertEqual(len(program.functions), 3)
+
+    def test_case_alias_identity_without_host_case_assumptions(self):
+        # Model POSIX path inequality on a case-insensitive volume, even when
+        # this test runs on Windows or a case-sensitive Linux filesystem.
+        parent = mock.Mock(spec=Path)
+        known, target = mock.Mock(spec=Path), mock.Mock(spec=Path)
+        known.name, target.name = 'math.ocl', 'Math.ocl'
+        known.parent = target.parent = parent
+        target.exists.return_value = True
+        target.samefile.return_value = True
+        parent.iterdir.return_value = [known]
+        self.assertIs(modules._existing_identity(target, [known]), known)
+        target.samefile.assert_called_once_with(known)
+        parent.iterdir.return_value = [known, target]
+        self.assertIs(modules._existing_identity(target, [known]), target)
+        target.samefile.return_value = False
+        self.assertIs(modules._existing_identity(target, [known]), target)
+
+    def test_case_distinct_hard_links_remain_distinct_module_paths(self):
+        original = self.write('math.ocl', 'fn f() -> i32 {return 42;}')
+        if (self.root / 'Math.ocl').exists():
+            self.skipTest('case-distinct directory entries require a case-sensitive volume')
+        try:
+            os.link(original, self.root / 'Math.ocl')
+        except OSError as error:
+            self.skipTest(f'hard links unavailable: {error}')
+        self.write('main.ocl', 'import math; import Math; fn main() -> i32 {return f();}')
+        # Two distinct module paths containing the same declaration, not a
+        # duplicate import of one path, even though their inode is identical.
+        self.diagnostic('E0201')
+
+    def case_sensitive_directory(self):
+        directory = self.root / 'case-sensitive'
+        directory.mkdir()
+        if os.name == 'nt':
+            try:
+                result = subprocess.run(['fsutil', 'file', 'setCaseSensitiveInfo', str(directory), 'enable'],
+                                        capture_output=True, text=True, timeout=30)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                self.skipTest(f'cannot request per-directory case sensitivity: {error}')
+            if result.returncode:
+                self.skipTest('host does not permit per-directory case sensitivity')
+        (directory / 'probe.ocl').write_text('', encoding='utf-8')
+        insensitive = (directory / 'PROBE.ocl').exists()
+        (directory / 'probe.ocl').unlink()
+        if insensitive:
+            self.skipTest('no case-sensitive directory is available on this host')
+        return directory
+
+    def compile_in(self, directory, code=None, filename=None):
+        if code is None:
+            return compile_file(directory / 'main.ocl')[0]
+        with self.assertRaises(DiagnosticError) as caught:
+            compile_file(directory / 'main.ocl')
+        self.assertEqual(caught.exception.code, code)
+        if filename:
+            self.assertEqual(Path(caught.exception.filename).name, filename)
+        return caught.exception
+
+    def test_case_distinct_files_stay_distinct_in_a_case_sensitive_directory(self):
+        # WindowsPath equality and hashing ignore case, so without exact-spelling
+        # identity two real files in a Windows case-sensitive directory merged:
+        # a duplicate import in both orders, a diamond that silently dropped one
+        # file, an error in the second file never reached, a misnamed cycle
+        # chain, and a missing alias reported as a duplicate.
+        directory = self.case_sensitive_directory()
+
+        def write(name, source):
+            (directory / name).write_text(source, encoding='utf-8')
+
+        write('math.ocl', 'fn add(a: i32, b: i32) -> i32 {return a + b;}')
+        write('Math.ocl', 'fn other() -> i32 {return 0;}')
+        for order in ('import math; import Math;', 'import Math; import math;'):
+            with self.subTest(order=order):
+                write('main.ocl', order + ' fn main() -> i32 {return add(20, 22) + other();}')
+                self.assertEqual(len(self.compile_in(directory).functions), 3)
+        write('a.ocl', 'import math;')
+        write('b.ocl', 'import Math;')
+        write('main.ocl', 'import a; import b; fn main() -> i32 {return add(20, 22) + other();}')
+        self.assertEqual(len(self.compile_in(directory).functions), 3)
+        write('Math.ocl', 'fn other() -> i32 { return @; }')
+        write('main.ocl', 'import math; import Math; fn main() -> i32 {return add(20, 22);}')
+        self.compile_in(directory, 'E0001', 'Math.ocl')
+        write('math.ocl', 'import Math;')
+        write('Math.ocl', 'import math;')
+        write('main.ocl', 'import math; fn main() -> i32 {return 42;}')
+        # Bounded in a child process like the other cycle regression: without
+        # cycle detection an in-process traversal never terminates and would
+        # hang the whole suite instead of failing this test.
+        try:
+            result = subprocess.run(
+                [sys.executable, str(ROOT / 'oclc.py'), 'check',
+                 str(directory / 'main.ocl'), '--diagnostic-format=json'],
+                cwd=ROOT, capture_output=True, encoding='utf-8', timeout=10)
+        except subprocess.TimeoutExpired:
+            self.fail('cycle detection failed to terminate within 10 seconds')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        error = json.loads(result.stderr)
+        self.assertEqual(error['code'], 'E0303')
+        self.assertEqual(Path(error['file']).name, 'Math.ocl')
+        self.assertIn('main.ocl -> math.ocl -> Math.ocl -> math.ocl', error['message'])
+        (directory / 'Math.ocl').unlink()
+        write('math.ocl', 'fn add(a: i32, b: i32) -> i32 {return a + b;}')
+        write('main.ocl', 'import math; import Math; fn main() -> i32 {return add(20, 22);}')
+        self.compile_in(directory, 'E0301', 'main.ocl')
+
+    def test_a_case_distinct_neighbour_of_the_entry_is_not_the_entry(self):
+        # Without exact identity, importing `Main` from `main.ocl` was reported
+        # as a self-import cycle, and a `Main.ocl` defining main never reached
+        # the imported-main rule.
+        directory = self.case_sensitive_directory()
+        (directory / 'Main.ocl').write_text('fn helper() -> i32 {return 42;}', encoding='utf-8')
+        (directory / 'main.ocl').write_text('import Main; fn main() -> i32 {return helper();}', encoding='utf-8')
+        self.assertEqual(len(self.compile_in(directory).functions), 2)
+        (directory / 'Main.ocl').write_text('fn main() -> i32 {return 1;}', encoding='utf-8')
+        self.compile_in(directory, 'E0306', 'Main.ocl')
+
+    def test_case_distinct_hard_links_stay_distinct_in_a_case_sensitive_directory(self):
+        directory = self.case_sensitive_directory()
+        (directory / 'math.ocl').write_text('fn f() -> i32 {return 42;}', encoding='utf-8')
+        try:
+            os.link(directory / 'math.ocl', directory / 'Math.ocl')
+        except OSError as error:
+            self.skipTest(f'hard links unavailable: {error}')
+        (directory / 'main.ocl').write_text('import math; import Math; fn main() -> i32 {return f();}', encoding='utf-8')
+        self.compile_in(directory, 'E0201')
+
+    def test_path_equality_alone_never_merges_two_spellings(self):
+        # Model WindowsPath semantics on any host: equal as Path objects,
+        # different as spellings, and not the same file.
+        parent = mock.Mock(spec=Path)
+        known, target = mock.MagicMock(spec=Path), mock.MagicMock(spec=Path)
+        known.name, target.name = 'math.ocl', 'Math.ocl'
+        known.parent = target.parent = parent
+        known.__eq__.return_value = True
+        target.__eq__.return_value = True
+        known.__str__.return_value = 'C:\\project\\math.ocl'
+        target.__str__.return_value = 'C:\\project\\Math.ocl'
+        target.exists.return_value = True
+        target.samefile.return_value = False
+        parent.iterdir.return_value = [known, target]
+        self.assertIs(modules._existing_identity(target, [known]), target)
+
+    def test_a_spelling_preserving_resolver_still_coalesces_case_aliases(self):
+        # POSIX Path.resolve keeps the imported spelling on a case-insensitive
+        # volume, so there only _existing_identity recognises Math.ocl as
+        # math.ocl. Windows canonicalises the spelling itself, which hides the
+        # rule from every non-macOS host. Simulate the POSIX resolver on a
+        # directory that really is case-insensitive so the rule stays pinned.
+        self.write('math.ocl', 'fn add(a: i32, b: i32) -> i32 {return a + b;}')
+        if not (self.root / 'MATH.ocl').exists():
+            self.skipTest('needs a case-insensitive directory')
+        self.write('main.ocl', 'import math; import Math; fn main() -> i32 {return add(20, 22);}')
+        real_resolve = Path.resolve
+
+        def preserve_spelling(path, *args, **kwargs):
+            resolved = real_resolve(path, *args, **kwargs)
+            return resolved.with_name(path.name) if path.suffix == '.ocl' else resolved
+
+        with mock.patch.object(Path, 'resolve', preserve_spelling):
+            self.diagnostic('E0302')
+
+    def test_an_escaping_alias_of_an_inside_module_is_still_outside_the_root(self):
+        # Case aliases are coalesced only within one directory. A resolution that
+        # escapes to an outside hard link of an inside module has the same inode
+        # and a case-variant name, so without the same-directory requirement it
+        # merged with the inside module: silently accepted through another
+        # module, or reported as a duplicate import instead of E0305.
+        self.write('math.ocl', 'fn add(a: i32, b: i32) -> i32 {return a + b;}')
+        self.write('alias.ocl', '')
+        self.write('b.ocl', 'import alias;')
+        self.write('main.ocl', 'import math; import b; fn main() -> i32 {return add(20, 22);}')
+        with tempfile.TemporaryDirectory(prefix='ocl outside ') as outside:
+            escaped = Path(outside) / 'Math.ocl'
+            try:
+                os.link(self.root / 'math.ocl', escaped)
+            except OSError as error:
+                self.skipTest(f'hard links unavailable: {error}')
+            real_resolve = Path.resolve
+
+            def redirect(path, *args, **kwargs):
+                resolved = real_resolve(path, *args, **kwargs)
+                return real_resolve(escaped) if resolved.name == 'alias.ocl' else resolved
+
+            with mock.patch.object(Path, 'resolve', redirect):
+                self.diagnostic('E0305', 'b.ocl')
+
+    def test_case_distinct_parent_directories_cannot_alias(self):
+        known, target = mock.MagicMock(spec=Path), mock.MagicMock(spec=Path)
+        known.__str__.return_value = 'C:/pkg/math.ocl'
+        target.__str__.return_value = 'C:/Pkg/Math.ocl'
+        known.name, target.name = 'math.ocl', 'Math.ocl'
+        known.parent.__str__.return_value = 'C:/pkg'
+        target.parent.__str__.return_value = 'C:/Pkg'
+        target.parent.__eq__.return_value = True
+        target.exists.return_value = target.samefile.return_value = True
+        target.parent.iterdir.return_value = [target]
+        self.assertIs(modules._existing_identity(target, [known]), target)
+
+    def test_containment_ignores_case_insensitive_path_equality(self):
+        self.write('main.ocl', 'import escape; fn main() -> i32 {return 42;}')
+        escaped = mock.MagicMock(spec=Path)
+        escaped.__str__.return_value = 'outside/escape.ocl'
+        escaped.name = 'escape.ocl'
+        escaped.parent.__str__.return_value = 'outside'
+        escaped.parent.__ne__.return_value = False
+        real_resolve, real_load = Path.resolve, modules._load
+
+        def redirect(path, *args, **kwargs):
+            return escaped if path.name == 'escape.ocl' else real_resolve(path, *args, **kwargs)
+
+        def load(path):
+            self.assertIsNot(path, escaped, 'outside dependency must be rejected before reading')
+            return real_load(path)
+
+        with mock.patch.object(Path, 'resolve', redirect), mock.patch.object(modules, '_load', load):
+            self.diagnostic('E0305', 'main.ocl')
+
+    def test_escape_into_a_case_distinct_sibling_directory_is_rejected(self):
+        base = self.case_sensitive_directory()
+        inside, outside = base / 'pkg', base / 'Pkg'
+        inside.mkdir()
+        outside.mkdir()
+        self.assertFalse(inside.samefile(outside))
+        entry = inside / 'main.ocl'
+        entry.write_text('import escape; fn main() -> i32 {return external();}', encoding='utf-8')
+        escaped = outside / 'escape.ocl'
+        escaped.write_text('fn external() -> i32 {return 42;}', encoding='utf-8')
+        real_resolve = Path.resolve
+
+        def redirect(path, *args, **kwargs):
+            return real_resolve(escaped) if path.name == 'escape.ocl' else real_resolve(path, *args, **kwargs)
+
+        with mock.patch.object(Path, 'resolve', redirect):
+            self.compile_in(inside, 'E0305', 'main.ocl')
+
+    def test_symlink_outside_root_is_rejected(self):
+        self.write('main.ocl', 'import alias; fn main() -> i32 {return 42;}')
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'outside.ocl'
+            target.write_text('', encoding='utf-8')
+            try:
+                (self.root / 'alias.ocl').symlink_to(target)
+            except (OSError, NotImplementedError):
+                self.skipTest('host does not permit creation of symlinks')
+            self.diagnostic('E0305', 'main.ocl')
+
+    def test_module_acceptance_in_all_commands_and_modes(self):
+        source = ROOT / 'examples' / 'modules' / 'main.ocl'
+        for command in ('check', 'emit-ir'):
+            result = subprocess.run([sys.executable, str(ROOT / 'oclc.py'), command, str(source)],
+                                    cwd=self.root, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.run_both(source)

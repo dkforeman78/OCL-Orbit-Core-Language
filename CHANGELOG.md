@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.16.0 - 2026-11-11
+
+- Centralized exact resolved-path identity for files and directories; rejected imports escaping into case-distinct sibling directories on Windows, with host-independent and real-filesystem regressions.
+- Fixed case-alias module identity on case-insensitive macOS volumes, while retaining distinct case-sensitive files and hard-link directory entries.
+- Bounded the cycle-diagnostic regression in a subprocess so removing cycle detection fails cleanly rather than hanging the suite.
+- Added root-relative `import name;` with iterative resolution, cycle and duplicate detection, and a 256-file limit.
+- Added cross-file functions, constants, enums and structures in one provisional flat compilation unit.
+- Added `compile_file` and source-owned locations for text/JSON dependency diagnostics; retained filesystem-free `compile_source`.
+- Added a fifteenth, multi-file acceptance program in both native build modes.
+
+### Fixed after independent review
+
+- Pinned the entry-directory containment rule on every host. Its only cover was the symlink test, which skips wherever the host denies symlink creation — including this Windows development machine — so deleting the check left the suite green. The rule is now also exercised by redirecting resolution, independently of filesystem privileges.
+- Pinned that revisiting an already-compiled module does not consume file budget. The bound counts unique files, but the existing boundary test uses a pure chain, which never revisits anything; only a diamond that reaches the limit exercises the ordering between the already-finished short circuit and the limit check.
+- Covered module identity for names differing only in case, which resolve to one file on a case-insensitive host and to distinct files elsewhere.
+- Module identity now compares exact resolved spellings. WindowsPath equality and hashing ignore case, so in a Windows case-sensitive directory two distinct files differing only in case merged: both import orders reported a duplicate import, a diamond silently dropped one file's declarations, a hard link was a duplicate rather than two paths, a missing case alias was a duplicate rather than unreadable, an error in the second file was never reached, the cycle chain misnamed it, and importing `Main` from `main.ocl` was a false self-import cycle. Present since modules were introduced.
+- Pinned case-alias coalescing on every host. Windows canonicalizes an alias's spelling during resolution and Linux keeps distinct files, so removing the alias check entirely was visible only to the macOS job; a simulated spelling-preserving resolver now exercises it everywhere.
+- Pinned that case aliases coalesce only within one directory. A resolution escaping to an outside hard link of an inside module has the same inode and a case-variant name; dropping the same-directory requirement merged it with the inside module, so an escape imported through another module compiled silently instead of failing with E0305.
+
 ## 0.15.0 - 2026-11-11
 
 - Added versioned JSON diagnostics on stderr for source, usage, I/O, toolchain, and detected internal compiler errors.
