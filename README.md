@@ -1,4 +1,6 @@
-# OCL — Orbit Core Language
+![Orbit Compiler Language (OCL) — Native Performance. Infinite Possibilities.](assets/branding/ocl-banner.png)
+
+# Orbit Compiler Language (OCL)
 
 OCL Compiler Prototype 0.16 adds modules and imports with file-specific diagnostics.
 
