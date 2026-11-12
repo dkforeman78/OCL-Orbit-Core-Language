@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.15.0 - Unreleased
+## 0.15.0 - 2026-11-11
 
 - Added versioned JSON diagnostics on stderr for source, usage, I/O, toolchain, and detected internal compiler errors.
 - Fixed caret alignment after tabs and source-line selection with Unicode separators inside comments.
