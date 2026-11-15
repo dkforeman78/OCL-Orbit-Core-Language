@@ -2,6 +2,10 @@
 
 This document describes only the implemented 0.16 subset. It is not a stability promise for later OCL releases.
 
+The unreleased, opt-in 0.17 namespace implementation is documented separately in
+[Namespaces and visibility](NAMESPACES.md). This document remains the unchanged
+legacy-mode contract; adopting the source header is an explicit migration.
+
 ## Grammar
 
 ```ebnf

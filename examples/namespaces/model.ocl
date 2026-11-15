@@ -1,0 +1,8 @@
+module namespaces;
+
+pub enum Status { Waiting, Ready }
+pub struct Point { x: i32, y: i32 }
+
+pub fn ready() -> Status {
+    return Status.Ready;
+}

@@ -8,6 +8,7 @@ from .literals import literal_parts
 
 
 class TokenKind(Enum):
+    PUB = auto()  # Recognized only after an explicit namespace header.
     IMPORT = auto()
     FN = auto()
     IF = auto()
@@ -36,6 +37,7 @@ class TokenKind(Enum):
     ARROW = auto()
     FAT_ARROW = auto()
     COLON = auto()
+    DOUBLE_COLON = auto()
     COMMA = auto()
     PLUS = auto()
     MINUS = auto()
@@ -112,6 +114,7 @@ def lex(source: str) -> list[Token]:
             index = end
             continue
         compound = {
+            "::": TokenKind.DOUBLE_COLON,
             "->": TokenKind.ARROW,
             "=>": TokenKind.FAT_ARROW,
             "==": TokenKind.EQUAL_EQUAL,

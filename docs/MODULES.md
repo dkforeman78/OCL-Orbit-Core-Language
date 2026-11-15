@@ -1,5 +1,9 @@
 # Modules — Prototype 0.16
 
+These rules continue to apply to sources without a namespace header. See
+[the unreleased 0.17 namespace rules](NAMESPACES.md) for explicit per-file opt-in;
+mixed legacy/namespace graphs are rejected rather than implicitly converted.
+
 Place `import arithmetic;` before declarations to load `arithmetic.ocl` beside
 the entry source. Dependencies resolve against this same entry directory, independent
 of the shell working directory. `import` is a reserved keyword. Names must be single

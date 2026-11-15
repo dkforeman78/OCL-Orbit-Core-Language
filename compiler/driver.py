@@ -8,10 +8,14 @@ from .semantic import analyze
 
 def compile_source(source: str, source_name: str = "input.ocl") -> tuple[Program, str]:
     tokens = lex(source)
+    from .namespaces import prepare, bind, Unit
+    tokens, namespaces = prepare(tokens, source)
     for token in tokens:
         if token.kind is TokenKind.IMPORT:
             raise DiagnosticError('E0300', 'imports require the compile_file API or a CLI file command', source, token.location)
-    program = parse(tokens, source)
+    program = parse(tokens, source, namespaces=namespaces)
+    if namespaces:
+        program = bind({'source': Unit(program, source, {})}, 'source')
     analyze(program, source)
     return program, generate_llvm_ir(program, source_name)
 

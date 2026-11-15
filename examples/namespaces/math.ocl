@@ -1,0 +1,9 @@
+module namespaces;
+
+pub fn sum(left: i32, right: i32) -> i32 {
+    return add(left, right);
+}
+
+fn add(left: i32, right: i32) -> i32 {
+    return left + right;
+}
