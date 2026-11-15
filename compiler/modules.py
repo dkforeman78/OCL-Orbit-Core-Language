@@ -1,5 +1,5 @@
 """Root-relative module loading with iterative graph traversal and owned locations."""
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
 from pathlib import Path
 
 from .diagnostics import DiagnosticError, SourceDocument
@@ -46,6 +46,8 @@ class Module:
     source: str
     tokens: list[Token]
     imports: list[Token]
+    namespaces: bool = False
+    dependencies: dict[str, str] = field(default_factory=dict)
 
 
 def _load(path: Path) -> Module:
@@ -57,6 +59,8 @@ def _load(path: Path) -> Module:
         error.filename = str(path)
         raise
     tokens = [replace(token, location=replace(token.location, document=document)) for token in tokens]
+    from .namespaces import prepare
+    tokens, namespaces = prepare(tokens, source)
     imports = []
     index = 0
     while tokens[index].kind is TokenKind.IMPORT:
@@ -68,7 +72,7 @@ def _load(path: Path) -> Module:
     for token in tokens[index:]:
         if token.kind is TokenKind.IMPORT:
             raise DiagnosticError('E0300', 'imports must precede all declarations at the top level', source, token.location)
-    return Module(path, source, tokens[index:], imports)
+    return Module(path, source, tokens[index:], imports, namespaces)
 
 
 def load_program(entry: Path) -> tuple[Program, str]:
@@ -108,6 +112,7 @@ def load_program(entry: Path) -> tuple[Program, str]:
         if key in active:
             chain = ' -> '.join([frame[0].path.name for frame in stack] + [target.name])
             raise DiagnosticError('E0303', f'import cycle: {chain}', module.source, reference.location)
+        module.dependencies[reference.lexeme] = target.name
         if key in finished:
             continue
         if len(modules) >= MAX_MODULES:
@@ -116,6 +121,10 @@ def load_program(entry: Path) -> tuple[Program, str]:
             child = _load(target)
         except (OSError, UnicodeError) as error:
             raise DiagnosticError('E0301', f"cannot read module '{attempted}': {error}", module.source, reference.location) from None
+        if child.namespaces != module.namespaces:
+            importer_mode = 'namespace' if module.namespaces else 'legacy'
+            child_mode = 'namespace' if child.namespaces else 'legacy'
+            raise DiagnosticError('E0311', f"mixed module modes: '{module.path.name}' is {importer_mode}, '{target.name}' is {child_mode}; migrate the graph consistently using 'module namespaces;'", module.source, reference.location)
         modules[key] = child
         active.add(key)
         stack.append((child, 0, set()))
@@ -125,7 +134,7 @@ def load_program(entry: Path) -> tuple[Program, str]:
                   if token.kind is TokenKind.ENUM and module.tokens[i+1].kind is TokenKind.IDENTIFIER}
     programs = []
     for module in modules.values():
-        program = parse(module.tokens, module.source, enum_names=enum_names)
+        program = parse(module.tokens, module.source, enum_names=enum_names, namespaces=module.namespaces)
         if _path_key(module.path) != _path_key(entry):
             for function in program.functions:
                 if function.name == 'main':
@@ -133,5 +142,10 @@ def load_program(entry: Path) -> tuple[Program, str]:
         programs.append(program)
     if not any(function.name == 'main' for function in programs[0].functions):
         raise DiagnosticError('E0204', 'program must define fn main() -> i32 in the entry source', first.source, first.tokens[-1].location)
+    if first.namespaces:
+        from .namespaces import Unit, bind
+        units = {module.path.name: Unit(program, module.source, module.dependencies)
+                 for module, program in zip(modules.values(), programs)}
+        return bind(units, first.path.name), first.source
     return Program(*(tuple(item for program in programs for item in getattr(program, attribute))
                      for attribute in ('functions', 'structures', 'enumerations', 'constants'))), first.source

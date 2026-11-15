@@ -215,6 +215,7 @@ class StructDeclaration:
     name: str
     fields: tuple[StructField, ...]
     location: SourceLocation
+    public: bool = False
 
 
 @dataclass(frozen=True)
@@ -228,6 +229,7 @@ class EnumDeclaration:
     name: str
     variants: tuple[EnumVariant, ...]
     location: SourceLocation
+    public: bool = False
 
 
 @dataclass(frozen=True)
@@ -236,6 +238,7 @@ class ConstDeclaration:
     type_name: TypeRef
     initializer: Expression
     location: SourceLocation
+    public: bool = False
 
 
 @dataclass(frozen=True)
@@ -245,6 +248,7 @@ class Function:
     body: tuple[Statement, ...]
     location: SourceLocation
     parameters: tuple[Parameter, ...] = ()
+    public: bool = False
 
 
 @dataclass(frozen=True)

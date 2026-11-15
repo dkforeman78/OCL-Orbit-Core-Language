@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import replace
 
 from .nodes import (
     I32_MAX,
@@ -76,12 +77,13 @@ _RECURSION_LIMIT_LOCK = RECURSION_LIMIT_LOCK
 
 
 class Parser:
-    def __init__(self, tokens: list[Token], source: str, enum_names=None):
+    def __init__(self, tokens: list[Token], source: str, enum_names=None, namespaces=False):
         self.tokens = tokens
         self.source = source
         self.current = 0
         self.depth = 0
         self.block_depth = 0
+        self.namespaces = namespaces
         self.enum_names = {
             tokens[index + 1].lexeme
             for index, token in enumerate(tokens[:-1])
@@ -89,6 +91,8 @@ class Parser:
         }
         if enum_names is not None:
             self.enum_names.update(enum_names)
+        if namespaces:
+            self.enum_names.clear()  # Namespace/type lookup is semantic, not lexical.
 
     def parse(self) -> Program:
         functions: list[Function] = []
@@ -96,14 +100,15 @@ class Parser:
         enumerations: list[EnumDeclaration] = []
         constants: list[ConstDeclaration] = []
         while not self._at(TokenKind.EOF):
+            public = self.namespaces and self._match(TokenKind.PUB)
             if self._at(TokenKind.STRUCT):
-                structures.append(self._struct_declaration())
+                structures.append(replace(self._struct_declaration(), public=public))
             elif self._at(TokenKind.ENUM):
-                enumerations.append(self._enum_declaration())
+                enumerations.append(replace(self._enum_declaration(), public=public))
             elif self._at(TokenKind.CONST):
-                constants.append(self._const_declaration())
+                constants.append(replace(self._const_declaration(), public=public))
             else:
-                functions.append(self._function())
+                functions.append(replace(self._function(), public=public))
         return Program(tuple(functions), tuple(structures), tuple(enumerations), tuple(constants))
 
     def _const_declaration(self) -> ConstDeclaration:
@@ -151,7 +156,7 @@ class Parser:
         parameters = self._parameters()
         self._expect(TokenKind.RIGHT_PAREN, "expected ')' after parameters")
         self._expect(TokenKind.ARROW, "expected '->' before return type")
-        return_type = self._expect(TokenKind.IDENTIFIER, "expected return type")
+        return_type = self._reference("expected return type")
         body = self._block("expected '{' to begin function body")
         return Function(name.lexeme, self._named_type(return_type.lexeme), body.statements, start.location, tuple(parameters))
 
@@ -188,7 +193,7 @@ class Parser:
             return WhileStatement(condition, self._block("expected '{' after while condition"), start.location)
         if self._at(TokenKind.LEFT_BRACE):
             return self._block()
-        name = self._expect(TokenKind.IDENTIFIER, "expected statement")
+        name = self._reference("expected statement")
         field_name = None
         if self._match(TokenKind.DOT):
             field_name = self._expect(TokenKind.IDENTIFIER, "expected field name after '.'")
@@ -222,7 +227,7 @@ class Parser:
 
     def _type_name(self, message: str) -> TypeRef:
         if not self._match(TokenKind.LEFT_BRACKET):
-            name = self._expect(TokenKind.IDENTIFIER, message).lexeme
+            name = self._reference(message).lexeme
             return self._named_type(name)
         element = self._expect(TokenKind.IDENTIFIER, "expected array element type")
         self._expect(TokenKind.SEMICOLON, "expected ';' before array length")
@@ -238,7 +243,7 @@ class Parser:
         while True:
             name = self._expect(TokenKind.IDENTIFIER, "expected parameter name")
             self._expect(TokenKind.COLON, "expected ':' after parameter name")
-            type_name = self._expect(TokenKind.IDENTIFIER, "expected parameter type")
+            type_name = self._reference("expected parameter type")
             parameters.append(Parameter(name.lexeme, self._named_type(type_name.lexeme), name.location))
             if not self._match(TokenKind.COMMA):
                 return parameters
@@ -404,7 +409,7 @@ class Parser:
             self._expect(TokenKind.RIGHT_BRACKET, "expected ']' after array literal")
             return ArrayLiteral(tuple(elements), start.location)
         if self._at(TokenKind.IDENTIFIER):
-            name = self._expect(TokenKind.IDENTIFIER, "expected identifier")
+            name = self._reference("expected identifier")
             if name.lexeme in self.enum_names and self._match(TokenKind.DOT):
                 variant = self._expect(TokenKind.IDENTIFIER, "expected enumeration variant after '.'")
                 return EnumVariantExpression(name.lexeme, variant.lexeme, name.location)
@@ -454,7 +459,7 @@ class Parser:
         self._expect(TokenKind.LEFT_BRACE, "expected '{' before match arms")
         arms: list[MatchArm] = []
         while not self._at(TokenKind.RIGHT_BRACE) and not self._at(TokenKind.EOF):
-            enum_name = self._expect(TokenKind.IDENTIFIER, "expected enumeration name in match arm")
+            enum_name = self._reference("expected enumeration name in match arm")
             self._expect(TokenKind.DOT, "expected '.' in match arm")
             variant = self._expect(TokenKind.IDENTIFIER, "expected enumeration variant in match arm")
             self._expect(TokenKind.FAT_ARROW, "expected '=>' in match arm")
@@ -463,6 +468,18 @@ class Parser:
                 break
         self._expect(TokenKind.RIGHT_BRACE, "expected '}' after match arms")
         return MatchExpression(scrutinee, tuple(arms), start.location)
+
+    def _reference(self, message: str) -> Token:
+        name = self._expect(TokenKind.IDENTIFIER, message)
+        if self.namespaces and self._match(TokenKind.DOUBLE_COLON):
+            member = self._expect(TokenKind.IDENTIFIER, "expected declaration after '::'")
+            from .namespaces import QualifiedName
+            return replace(member, lexeme=QualifiedName(name.lexeme, member.lexeme,
+                                                       name.location, member.location))
+        if self.namespaces:
+            from .namespaces import ReferenceName
+            return replace(name, lexeme=ReferenceName(name.lexeme, name.location))
+        return name
 
     def _named_type(self, name: str) -> TypeRef:
         if name == "bool" or name in INTEGER_TYPES:
@@ -506,7 +523,7 @@ class Parser:
         return True
 
 
-def parse(tokens: list[Token], source: str, *, enum_names=None) -> Program:
+def parse(tokens: list[Token], source: str, *, enum_names=None, namespaces=False) -> Program:
     """Parse a token stream, guaranteeing E0101 rather than a RecursionError.
 
     The depth guard is expressed in parser levels, but it is enforced by Python
@@ -516,4 +533,4 @@ def parse(tokens: list[Token], source: str, *, enum_names=None) -> Program:
     documented limit deterministic instead of dependent on the call site.
     """
     with reserved(MAX_EXPRESSION_DEPTH * FRAMES_PER_LEVEL):
-        return Parser(tokens, source, enum_names).parse()
+        return Parser(tokens, source, enum_names, namespaces).parse()

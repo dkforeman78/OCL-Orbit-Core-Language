@@ -1,0 +1,11 @@
+module namespaces;
+import math;
+import model;
+
+fn main() -> i32 {
+    let point: model::Point = model::Point { x: 20, y: 22 };
+    return match model::ready() {
+        model::Status.Ready => math::sum(point.x, point.y),
+        model::Status.Waiting => 0
+    };
+}

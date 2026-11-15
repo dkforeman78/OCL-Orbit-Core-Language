@@ -9,6 +9,17 @@ lowering. Every token location can retain a shared immutable SourceDocument;
 diagnostics use that document instead of the entry source for dependency errors.
 The source-string API remains independent of filesystem lookup.
 
+The unreleased 0.17 path recognizes a contextual `module namespaces;` header
+before imports, checks mode consistency on import edges, and preserves module
+ownership in `namespaces.Unit` until semantic binding. The parser does not use
+the flat enum-name set for namespace files: dotted enum references and named
+types are resolved semantically. `namespaces.Binder` indexes own/direct-import
+symbol spaces, checks visibility, and emits owner-qualified AST identities for
+the existing semantic analyzer and LLVM backend. Expression and block binding
+walks are iterative. Internal symbol names encode the exact module filename,
+not absolute paths, randomized hashes, or import aliases. The legacy path still
+uses the original flat compilation model. See [NAMESPACES.md](NAMESPACES.md).
+
 Prototype 0.14 selects explicit Clang `-O0` for default native builds and `-O2`
 for `build --release`. Frontend validation and LLVM generation are identical in
 both modes. No fast-math, overflow flags, LTO, or CPU-specific tuning is added.
